@@ -1,0 +1,32 @@
+[source]
+paths = [
+  "C:/Users/name/Documents",
+  "C:/dev/project"
+]
+
+[destination]
+path = "D:/backups"
+
+[archive]
+max_part_size_mb = 500
+compression_level = 6
+
+[exclude]
+patterns = [
+  "target/**",
+  "node_modules/**",
+  ".git/**",
+  "*.tmp"
+]
+
+[behavior]
+verify_after_copy = true
+delete_local_archive_after_copy = true
+
+[work]
+# Omit this to use the OS temp directory.
+path = "C:/tmp/auto_backup"
+
+[log]
+# Omit this to write auto_backup.log next to the executable's working directory.
+path = "C:/tmp/auto_backup/auto_backup.log"
