@@ -63,6 +63,7 @@ patterns = [
 [behavior]
 verify_after_copy = true
 delete_local_archive_after_copy = true
+skip_unreadable_files = false
 
 [work]
 path = "C:/tmp/auto_backup"
@@ -93,6 +94,9 @@ path = "C:/tmp/auto_backup/auto_backup.log"
 
 `behavior.delete_local_archive_after_copy`
 : `true` の場合、保存先へのコピーと検証に成功したあと、作業ディレクトリ内の圧縮ファイルを削除します。
+
+`behavior.skip_unreadable_files`
+: `true` の場合、Outlook の `.pst` など、別プロセスにロックされて読めないファイルをスキップしてバックアップを続行します。スキップしたファイルはログとマニフェストの `skipped_files` に記録されます。既定値は `false` です。
 
 `work.path`
 : 圧縮や分割のために使う作業ディレクトリです。省略するとOSの一時ディレクトリ配下を使います。

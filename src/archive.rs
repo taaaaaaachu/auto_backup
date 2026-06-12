@@ -7,7 +7,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
-use crate::manifest::{Manifest, Part};
+use crate::manifest::{Manifest, Part, SkippedFile};
 
 pub fn build_exclude_set(patterns: &[String]) -> Result<GlobSet> {
     let mut builder = GlobSetBuilder::new();
@@ -23,15 +23,32 @@ pub fn create_tar_zst(
     output: &Path,
     compression_level: i32,
     excludes: &GlobSet,
-) -> Result<()> {
+    skip_unreadable_files: bool,
+) -> Result<Vec<SkippedFile>> {
     let file = File::create(output)
         .with_context(|| format!("failed to create archive {}", output.display()))?;
     let encoder = zstd::Encoder::new(BufWriter::new(file), compression_level)
         .context("failed to create zstd encoder")?;
     let mut tar = tar::Builder::new(encoder);
+    let mut skipped_files = Vec::new();
 
     for entry in WalkDir::new(source).follow_links(false) {
-        let entry = entry.with_context(|| format!("failed to walk {}", source.display()))?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) if skip_unreadable_files => {
+                skipped_files.push(SkippedFile {
+                    path: error
+                        .path()
+                        .map(Path::to_path_buf)
+                        .unwrap_or_else(|| source.to_path_buf()),
+                    reason: error.to_string(),
+                });
+                continue;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed to walk {}", source.display()))
+            }
+        };
         let path = entry.path();
         if path == source {
             continue;
@@ -49,14 +66,24 @@ pub fn create_tar_zst(
             tar.append_dir(relative, path)
                 .with_context(|| format!("failed to append directory {}", path.display()))?;
         } else if entry.file_type().is_file() {
-            tar.append_path_with_name(path, relative)
-                .with_context(|| format!("failed to append file {}", path.display()))?;
+            if let Err(error) = tar.append_path_with_name(path, relative) {
+                if skip_unreadable_files {
+                    skipped_files.push(SkippedFile {
+                        path: path.to_path_buf(),
+                        reason: error.to_string(),
+                    });
+                    continue;
+                }
+
+                return Err(error)
+                    .with_context(|| format!("failed to append file {}", path.display()));
+            }
         }
     }
 
     let encoder = tar.into_inner().context("failed to finish tar stream")?;
     encoder.finish().context("failed to finish zstd stream")?;
-    Ok(())
+    Ok(skipped_files)
 }
 
 pub fn split_archive(
@@ -95,6 +122,7 @@ pub fn split_archive(
             full_sha256,
             full_size,
             parts: vec![part],
+            skipped_files: Vec::new(),
         };
         return Ok((manifest, vec![final_path]));
     }
@@ -149,6 +177,7 @@ pub fn split_archive(
         full_sha256,
         full_size,
         parts,
+        skipped_files: Vec::new(),
     };
     Ok((manifest, paths))
 }

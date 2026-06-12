@@ -12,6 +12,8 @@ pub struct Manifest {
     pub full_sha256: String,
     pub full_size: u64,
     pub parts: Vec<Part>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped_files: Vec<SkippedFile>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -19,6 +21,12 @@ pub struct Part {
     pub file_name: String,
     pub sha256: String,
     pub size: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SkippedFile {
+    pub path: PathBuf,
+    pub reason: String,
 }
 
 impl Manifest {

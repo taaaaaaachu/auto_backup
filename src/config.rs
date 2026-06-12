@@ -47,6 +47,8 @@ pub struct BehaviorConfig {
     pub verify_after_copy: bool,
     #[serde(default = "default_true")]
     pub delete_local_archive_after_copy: bool,
+    #[serde(default)]
+    pub skip_unreadable_files: bool,
 }
 
 impl Default for BehaviorConfig {
@@ -54,6 +56,7 @@ impl Default for BehaviorConfig {
         Self {
             verify_after_copy: true,
             delete_local_archive_after_copy: true,
+            skip_unreadable_files: false,
         }
     }
 }

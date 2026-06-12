@@ -22,6 +22,7 @@ patterns = [
 [behavior]
 verify_after_copy = true
 delete_local_archive_after_copy = true
+skip_unreadable_files = false
 
 [work]
 # Omit this to use the OS temp directory.

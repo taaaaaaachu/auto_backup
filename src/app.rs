@@ -37,20 +37,29 @@ pub fn backup(config_path: &PathBuf) -> Result<()> {
         let base_name = format!("{timestamp}_{source_name}");
         log.info(&format!("creating archive for {}", source.display()))?;
         let raw_archive = work_dir.join(format!("{base_name}.tmp.tar.zst"));
-        archive::create_tar_zst(
+        let skipped_files = archive::create_tar_zst(
             source,
             &raw_archive,
             config.archive.compression_level,
             &excludes,
+            config.behavior.skip_unreadable_files,
         )?;
 
-        let (manifest, mut local_files) = archive::split_archive(
+        let (mut manifest, mut local_files) = archive::split_archive(
             &raw_archive,
             &base_name,
             config.max_part_size_bytes(),
             timestamp.clone(),
             source.clone(),
         )?;
+        manifest.skipped_files = skipped_files;
+        for skipped_file in &manifest.skipped_files {
+            log.warn(&format!(
+                "skipped unreadable file {}: {}",
+                skipped_file.path.display(),
+                skipped_file.reason
+            ))?;
+        }
         let manifest_path = work_dir.join(format!("{base_name}.manifest.toml"));
         manifest.write_to(&manifest_path)?;
         local_files.push(manifest_path);
@@ -263,8 +272,16 @@ impl Logger {
     }
 
     fn info(&mut self, message: &str) -> Result<()> {
+        self.write("INFO", message)
+    }
+
+    fn warn(&mut self, message: &str) -> Result<()> {
+        self.write("WARN", message)
+    }
+
+    fn write(&mut self, level: &str, message: &str) -> Result<()> {
         let timestamp = Local::now().to_rfc3339();
-        writeln!(self.file, "[{timestamp}] INFO {message}")?;
+        writeln!(self.file, "[{timestamp}] {level} {message}")?;
         println!("{message}");
         Ok(())
     }
