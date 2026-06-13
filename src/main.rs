@@ -3,6 +3,7 @@ mod archive;
 mod config;
 mod manifest;
 mod paths;
+mod progress;
 
 use std::path::PathBuf;
 

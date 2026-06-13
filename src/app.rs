@@ -1,5 +1,5 @@
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -9,10 +9,12 @@ use crate::archive;
 use crate::config::Config;
 use crate::manifest::Manifest;
 use crate::paths::unique_source_names;
+use crate::progress::{ConsoleProgress, ProgressReporter};
 
 pub fn backup(config_path: &PathBuf) -> Result<()> {
     let config = Config::load(config_path)?;
     let mut log = Logger::new(&config.log_path())?;
+    let mut progress = ConsoleProgress::new();
     log.info("backup started")?;
 
     std::fs::create_dir_all(&config.destination.path).with_context(|| {
@@ -37,20 +39,22 @@ pub fn backup(config_path: &PathBuf) -> Result<()> {
         let base_name = format!("{timestamp}_{source_name}");
         log.info(&format!("creating archive for {}", source.display()))?;
         let raw_archive = work_dir.join(format!("{base_name}.tmp.tar.zst"));
-        let skipped_files = archive::create_tar_zst(
+        let skipped_files = archive::create_tar_zst_with_progress(
             source,
             &raw_archive,
             config.archive.compression_level,
             &excludes,
             config.behavior.skip_unreadable_files,
+            &mut progress,
         )?;
 
-        let (mut manifest, mut local_files) = archive::split_archive(
+        let (mut manifest, mut local_files) = archive::split_archive_with_progress(
             &raw_archive,
             &base_name,
             config.max_part_size_bytes(),
             timestamp.clone(),
             source.clone(),
+            &mut progress,
         )?;
         manifest.skipped_files = skipped_files;
         for skipped_file in &manifest.skipped_files {
@@ -64,7 +68,7 @@ pub fn backup(config_path: &PathBuf) -> Result<()> {
         manifest.write_to(&manifest_path)?;
         local_files.push(manifest_path);
 
-        copy_verify_and_cleanup(&config, &manifest, &local_files, &mut log)?;
+        copy_verify_and_cleanup(&config, &manifest, &local_files, &mut log, &mut progress)?;
     }
 
     log.info("backup finished")?;
@@ -74,6 +78,7 @@ pub fn backup(config_path: &PathBuf) -> Result<()> {
 pub fn restore(config_path: &PathBuf, input: &PathBuf, output: &PathBuf) -> Result<()> {
     let config = Config::load(config_path)?;
     let mut log = Logger::new(&config.log_path())?;
+    let mut progress = ConsoleProgress::new();
     log.info("restore started")?;
 
     let work_dir = config.work_dir();
@@ -84,32 +89,33 @@ pub fn restore(config_path: &PathBuf, input: &PathBuf, output: &PathBuf) -> Resu
         .canonicalize()
         .with_context(|| format!("restore input not found: {}", input.display()))?;
 
-    let (archive_to_restore, remove_after_restore) =
-        if input.extension().and_then(|v| v.to_str()) == Some("toml") {
-            let manifest = Manifest::read_from(&input)?;
-            let manifest_dir = input.parent().context("manifest has no parent directory")?;
-            let combined = work_dir.join(format!("{}.restore.tar.zst", manifest.archive_name));
-            archive::combine_parts(&manifest, manifest_dir, &combined)?;
-            (combined, true)
-        } else if input
-            .file_name()
-            .and_then(|v| v.to_str())
-            .is_some_and(|name| name.ends_with(".tar.zst"))
-        {
-            verify_single_archive_if_manifest_exists(&input)?;
-            (input, false)
-        } else {
-            let manifest_path = detect_manifest_for_part(&input)?;
-            let manifest = Manifest::read_from(&manifest_path)?;
-            let manifest_dir = manifest_path
-                .parent()
-                .context("manifest has no parent directory")?;
-            let combined = work_dir.join(format!("{}.restore.tar.zst", manifest.archive_name));
-            archive::combine_parts(&manifest, manifest_dir, &combined)?;
-            (combined, true)
-        };
+    let (archive_to_restore, remove_after_restore) = if input.extension().and_then(|v| v.to_str())
+        == Some("toml")
+    {
+        let manifest = Manifest::read_from(&input)?;
+        let manifest_dir = input.parent().context("manifest has no parent directory")?;
+        let combined = work_dir.join(format!("{}.restore.tar.zst", manifest.archive_name));
+        archive::combine_parts_with_progress(&manifest, manifest_dir, &combined, &mut progress)?;
+        (combined, true)
+    } else if input
+        .file_name()
+        .and_then(|v| v.to_str())
+        .is_some_and(|name| name.ends_with(".tar.zst"))
+    {
+        verify_single_archive_if_manifest_exists(&input)?;
+        (input, false)
+    } else {
+        let manifest_path = detect_manifest_for_part(&input)?;
+        let manifest = Manifest::read_from(&manifest_path)?;
+        let manifest_dir = manifest_path
+            .parent()
+            .context("manifest has no parent directory")?;
+        let combined = work_dir.join(format!("{}.restore.tar.zst", manifest.archive_name));
+        archive::combine_parts_with_progress(&manifest, manifest_dir, &combined, &mut progress)?;
+        (combined, true)
+    };
 
-    archive::restore_tar_zst(&archive_to_restore, output)?;
+    archive::restore_tar_zst_with_progress(&archive_to_restore, output, &mut progress)?;
     if remove_after_restore {
         std::fs::remove_file(&archive_to_restore).ok();
     }
@@ -122,6 +128,7 @@ fn copy_verify_and_cleanup(
     manifest: &Manifest,
     local_files: &[PathBuf],
     log: &mut Logger,
+    progress: &mut impl ProgressReporter,
 ) -> Result<()> {
     let mut copied_files = Vec::new();
     for local_path in local_files {
@@ -137,13 +144,14 @@ fn copy_verify_and_cleanup(
             );
         }
 
-        let copy_result = std::fs::copy(local_path, &destination_path).with_context(|| {
-            format!(
-                "failed to copy {} to {}",
-                local_path.display(),
-                destination_path.display()
-            )
-        });
+        let copy_result = copy_file_with_progress(local_path, &destination_path, progress)
+            .with_context(|| {
+                format!(
+                    "failed to copy {} to {}",
+                    local_path.display(),
+                    destination_path.display()
+                )
+            });
         if let Err(error) = copy_result {
             cleanup_files(&copied_files);
             return Err(error);
@@ -158,7 +166,7 @@ fn copy_verify_and_cleanup(
 
         for part in &manifest.parts {
             let copied_path = config.destination.path.join(&part.file_name);
-            archive::verify_file(&copied_path, &part.sha256, part.size)?;
+            archive::verify_file_with_progress(&copied_path, &part.sha256, part.size, progress)?;
         }
         let manifest_name = format!("{}.manifest.toml", manifest.archive_name);
         let copied_manifest = config.destination.path.join(&manifest_name);
@@ -166,12 +174,13 @@ fn copy_verify_and_cleanup(
             .iter()
             .find(|path| path.file_name().and_then(|v| v.to_str()) == Some(manifest_name.as_str()))
             .context("local manifest was not staged")?;
-        let expected_manifest_sha = archive::sha256_file(local_manifest)?;
+        let expected_manifest_sha = archive::sha256_file_with_progress(local_manifest, progress)?;
         let expected_manifest_size = local_manifest.metadata()?.len();
-        archive::verify_file(
+        archive::verify_file_with_progress(
             &copied_manifest,
             &expected_manifest_sha,
             expected_manifest_size,
+            progress,
         )?;
         Ok(())
     })();
@@ -198,6 +207,37 @@ fn copy_verify_and_cleanup(
         manifest.archive_name
     ))?;
     Ok(())
+}
+
+fn copy_file_with_progress(
+    source: &Path,
+    destination: &Path,
+    progress: &mut impl ProgressReporter,
+) -> Result<u64> {
+    let total_size = source
+        .metadata()
+        .with_context(|| format!("failed to read metadata for {}", source.display()))?
+        .len();
+    progress.start("copy bytes", Some(total_size));
+
+    let mut reader = BufReader::new(std::fs::File::open(source)?);
+    let mut writer = BufWriter::new(std::fs::File::create(destination)?);
+    let mut copied = 0u64;
+    let mut buffer = vec![0u8; 1024 * 1024];
+
+    loop {
+        let bytes_read = reader.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        writer.write_all(&buffer[..bytes_read])?;
+        copied += bytes_read as u64;
+        progress.advance(bytes_read as u64);
+    }
+
+    writer.flush()?;
+    progress.finish();
+    Ok(copied)
 }
 
 fn cleanup_files(paths: &[PathBuf]) {
