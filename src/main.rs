@@ -4,6 +4,8 @@ mod config;
 mod manifest;
 mod paths;
 mod progress;
+#[cfg(windows)]
+mod vss;
 
 use std::path::PathBuf;
 

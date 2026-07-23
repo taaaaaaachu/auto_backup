@@ -10,6 +10,7 @@ use crate::config::Config;
 use crate::manifest::Manifest;
 use crate::paths::unique_source_names;
 use crate::progress::{ConsoleProgress, ProgressReporter};
+use crate::vss::VssSession;
 
 pub fn backup(config_path: &PathBuf) -> Result<()> {
     let config = Config::load(config_path)?;
@@ -31,16 +32,32 @@ pub fn backup(config_path: &PathBuf) -> Result<()> {
     let names = unique_source_names(&config.source.paths);
     let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
 
+    let (vss_session, vss_logs) = VssSession::new(&config.source.paths);
+    for line in &vss_logs {
+        log.info(line)?;
+    }
+
     for (source, source_name) in config.source.paths.iter().zip(names.iter()) {
         if !source.is_dir() {
             bail!("source path is not a directory: {}", source.display());
         }
 
+        let source_read = vss_session.resolve(source);
+        log.info(&format!(
+            "{} for {}",
+            if source_read.used_vss {
+                "VSS snapshot used"
+            } else {
+                "direct read (no VSS)"
+            },
+            source.display()
+        ))?;
+
         let base_name = format!("{timestamp}_{source_name}");
         log.info(&format!("creating archive for {}", source.display()))?;
         let raw_archive = work_dir.join(format!("{base_name}.tmp.tar.zst"));
         let skipped_files = archive::create_tar_zst_with_progress(
-            source,
+            &source_read.read_path,
             &raw_archive,
             config.archive.compression_level,
             &excludes,

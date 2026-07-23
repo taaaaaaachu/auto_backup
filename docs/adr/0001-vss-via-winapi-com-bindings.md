@@ -1,0 +1,5 @@
+# Read backup sources through VSS using the winapi crate's COM bindings
+
+Backup sources are archived by calling the Windows VSS COM API (`IVssBackupComponents`) directly, using the `winapi` crate rather than the modern `windows` crate (windows-rs). windows-rs — the Microsoft-recommended replacement for winapi — does not currently bind `IVssBackupComponents` (a known gap in win32metadata), so hand-writing that COM interface's vtable ourselves was the only way to use it; winapi already has complete, tested bindings for the whole VSS backup API (`CreateVssBackupComponents`, `IVssBackupComponents`, `IVssAsync`, ...), so we depend on it instead of re-deriving those bindings. Shelling out to `vssadmin`/PowerShell WMI was also considered and rejected to avoid coupling backup correctness to an external process and its output format. `wio::com::ComPtr` is used for RAII-style `Release()` on the COM objects.
+
+Revisit this if windows-rs ever adds native `IVssBackupComponents` support — winapi is in maintenance mode and windows-rs is the long-term direction for Windows FFI in Rust.
