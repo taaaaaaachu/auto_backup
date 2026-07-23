@@ -14,7 +14,7 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Component, Path, PathBuf, Prefix};
 use std::ptr;
 
-use anyhow::{anyhow, ensure, Result};
+use anyhow::{ensure, Result};
 use winapi::shared::guiddef::GUID;
 use winapi::shared::minwindef::TRUE;
 use winapi::um::combaseapi::{CoInitializeEx, CoUninitialize};
@@ -190,27 +190,19 @@ impl VssSession {
                 "no requested volume could be added to the VSS snapshot set"
             );
 
-            let mut async_ptr: *mut IVssAsync = ptr::null_mut();
-            let hr = vss.PrepareForBackup(&mut async_ptr);
-            if hr < 0 || async_ptr.is_null() {
-                vss.AbortBackup();
-                return Err(anyhow!("PrepareForBackup failed (0x{:08X})", hr as u32));
-            }
-            if let Err(error) = wait_for_async(async_ptr, "PrepareForBackup") {
-                vss.AbortBackup();
-                return Err(error);
-            }
-
+            // VSS_CTX_CLIENT_ACCESSIBLE does not involve writers, and calling
+            // PrepareForBackup/AbortBackup/BackupComplete under a
+            // non-writer-participating context is documented to return an
+            // error, so this goes straight from AddToSnapshotSet to
+            // DoSnapshotSet. See ADR-0003.
             let mut async_ptr: *mut IVssAsync = ptr::null_mut();
             let hr = vss.DoSnapshotSet(&mut async_ptr);
-            if hr < 0 || async_ptr.is_null() {
-                vss.AbortBackup();
-                return Err(anyhow!("DoSnapshotSet failed (0x{:08X})", hr as u32));
-            }
-            if let Err(error) = wait_for_async(async_ptr, "DoSnapshotSet") {
-                vss.AbortBackup();
-                return Err(error);
-            }
+            ensure!(
+                hr >= 0 && !async_ptr.is_null(),
+                "DoSnapshotSet failed (0x{:08X})",
+                hr as u32
+            );
+            wait_for_async(async_ptr, "DoSnapshotSet")?;
 
             let mut device_objects = HashMap::new();
             for (root, snapshot_id) in &snapshot_ids {
