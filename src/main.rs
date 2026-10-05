@@ -1,6 +1,7 @@
 mod app;
 mod archive;
 mod config;
+mod console;
 mod manifest;
 mod paths;
 mod progress;
@@ -38,6 +39,7 @@ enum Command {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let _quick_edit = console::QuickEditGuard::disable();
 
     match cli.command {
         Command::Backup { config } => app::backup(&config),

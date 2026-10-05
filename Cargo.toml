@@ -26,4 +26,8 @@ features = [
   "objbase",
   "winerror",
   "winbase",
+  "consoleapi",
+  "processenv",
+  "wincon",
+  "handleapi",
 ]
