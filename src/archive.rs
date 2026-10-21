@@ -341,12 +341,17 @@ pub fn restore_tar_zst_with_progress(
             output_dir.display()
         )
     })?;
-    let total_entries = ensure_no_existing_entries(archive_path, output_dir)?;
-    progress.start("restore entries", Some(total_entries));
+    ensure_no_existing_entries(archive_path, output_dir, progress)?;
 
-    let file = File::open(archive_path)?;
-    let decoder =
-        zstd::Decoder::new(BufReader::new(file)).context("failed to create zstd decoder")?;
+    // 展開済みの件数ではなく、アーカイブ(圧縮後)を読んだバイト数で進捗を出す。
+    // 巨大ファイル1つを展開している間も進捗が進むようにするため。
+    let (file, archive_size) = open_with_size(archive_path)?;
+    progress.start("restore bytes", Some(archive_size));
+    let reader = ProgressReader {
+        inner: file,
+        progress: &mut *progress,
+    };
+    let decoder = zstd::Decoder::new(reader).context("failed to create zstd decoder")?;
     let mut archive = tar::Archive::new(decoder);
     for entry in archive
         .entries()
@@ -356,18 +361,33 @@ pub fn restore_tar_zst_with_progress(
         entry
             .unpack_in(output_dir)
             .with_context(|| format!("failed to unpack archive to {}", output_dir.display()))?;
-        progress.advance(1);
     }
+    drop(archive);
     progress.finish();
     Ok(())
 }
 
-fn ensure_no_existing_entries(archive_path: &Path, output_dir: &Path) -> Result<u64> {
-    let file = File::open(archive_path)?;
-    let decoder =
-        zstd::Decoder::new(BufReader::new(file)).context("failed to create zstd decoder")?;
+fn open_with_size(path: &Path) -> Result<(File, u64)> {
+    let file =
+        File::open(path).with_context(|| format!("failed to open archive {}", path.display()))?;
+    let size = file.metadata()?.len();
+    Ok((file, size))
+}
+
+/// 展開先に既存ファイルがないか、危険なパスがないかを展開前に全エントリで確かめる。
+fn ensure_no_existing_entries(
+    archive_path: &Path,
+    output_dir: &Path,
+    progress: &mut impl ProgressReporter,
+) -> Result<()> {
+    let (file, archive_size) = open_with_size(archive_path)?;
+    progress.start("check entries", Some(archive_size));
+    let reader = ProgressReader {
+        inner: file,
+        progress: &mut *progress,
+    };
+    let decoder = zstd::Decoder::new(reader).context("failed to create zstd decoder")?;
     let mut archive = tar::Archive::new(decoder);
-    let mut count = 0u64;
     for entry in archive
         .entries()
         .context("failed to read archive entries")?
@@ -386,10 +406,10 @@ fn ensure_no_existing_entries(archive_path: &Path, output_dir: &Path) -> Result<
         if target.exists() {
             bail!("restore target already exists: {}", target.display());
         }
-        count += 1;
     }
-
-    Ok(count)
+    drop(archive);
+    progress.finish();
+    Ok(())
 }
 
 /// アーカイブ対象のファイルサイズ合計を数える。走査中も止まって見えないよう
@@ -549,6 +569,34 @@ mod tests {
             std::fs::read(restored_long_dir.join("big.bin")).expect("big.bin missing"),
             big
         );
+    }
+
+    #[test]
+    fn restore_reports_archive_byte_progress() {
+        let dir = TestDir::new("restore_progress");
+        let source = dir.path.join("source");
+        std::fs::create_dir(&source).expect("failed to create source");
+        std::fs::write(source.join("hello.txt"), "hello").expect("failed to write source file");
+        let archive = dir.path.join("backup.tar.zst");
+        let excludes = build_exclude_set(&[]).expect("failed to build excludes");
+        create_tar_zst_with_progress(&source, &archive, 1, &excludes, false, &mut NoProgress)
+            .expect("failed to create archive");
+        let archive_size = archive.metadata().expect("archive missing").len();
+        let mut progress = RecordingProgress::default();
+
+        restore_tar_zst_with_progress(&archive, &dir.path.join("restored"), &mut progress)
+            .expect("failed to restore archive");
+
+        assert_eq!(
+            progress.starts,
+            vec![
+                ("check entries".to_string(), Some(archive_size)),
+                ("restore bytes".to_string(), Some(archive_size)),
+            ]
+        );
+        // 事前チェックと展開でアーカイブ全体を2回読む
+        assert_eq!(progress.advanced_by, archive_size * 2);
+        assert_eq!(progress.finishes, 2);
     }
 
     #[test]

@@ -95,7 +95,7 @@ pub fn backup(config_path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-pub fn restore(config_path: &PathBuf, input: &PathBuf, output: &PathBuf) -> Result<()> {
+pub fn restore(config_path: &PathBuf, input: &Path, output: &Path) -> Result<()> {
     let config = Config::load(config_path)?;
     let mut log = Logger::new(&config.log_path())?;
     let mut progress = ConsoleProgress::new();

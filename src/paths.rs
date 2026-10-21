@@ -95,5 +95,5 @@ fn reversed_components(path: &Path) -> Vec<String> {
 fn short_hash(path: &Path) -> String {
     let mut hasher = Sha256::new();
     hasher.update(path.to_string_lossy().as_bytes());
-    hex::encode(&hasher.finalize())[..8].to_string()
+    hex::encode(hasher.finalize())[..8].to_string()
 }
