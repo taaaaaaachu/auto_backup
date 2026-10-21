@@ -85,7 +85,7 @@ impl ProgressReporter for ConsoleProgress {
         state.label = Some(label.to_string());
         state.total = total;
         state.current = 0;
-        state.last_percent = None;
+        state.last_value = None;
         state.last_printed_at = None;
         state.print(true);
     }
@@ -111,7 +111,7 @@ struct State {
     label: Option<String>,
     total: Option<u64>,
     current: u64,
-    last_percent: Option<u64>,
+    last_value: Option<u64>,
     last_printed_at: Option<Instant>,
 }
 
@@ -137,7 +137,7 @@ impl State {
                     total,
                     percent
                 );
-                self.last_percent = Some(percent);
+                self.last_value = Some(percent);
             }
             Some(_) => {
                 if !self.should_emit(force, now, None) {
@@ -146,10 +146,15 @@ impl State {
                 println!("{label}: done");
             }
             None => {
-                if !self.should_emit(force, now, None) {
+                if !self.should_emit(force, now, Some(self.current)) {
                     return;
                 }
-                println!("{label}: {}", self.current);
+                if self.current == 0 {
+                    println!("{label}...");
+                } else {
+                    println!("{label}: {}", self.current);
+                }
+                self.last_value = Some(self.current);
             }
         }
         self.last_printed_at = Some(now);
@@ -157,10 +162,10 @@ impl State {
 
     /// 出力すべきかどうかを判定する(副作用なし)。
     ///
-    /// `percent` が `Some` のときはパーセンテージ表示の分岐で、値が変われば即出力、
+    /// `value` が `Some` のときは表示する値(パーセンテージや件数)で、値が変われば即出力、
     /// 変わらなくてもハートビート間隔を過ぎていれば出力する。`None` のときは
     /// 最小間隔さえ空いていれば出力する。
-    fn should_emit(&self, force: bool, now: Instant, percent: Option<u64>) -> bool {
+    fn should_emit(&self, force: bool, now: Instant, value: Option<u64>) -> bool {
         if force {
             return true;
         }
@@ -171,10 +176,8 @@ impl State {
         if elapsed < MIN_INTERVAL {
             return false;
         }
-        match percent {
-            Some(percent) => {
-                self.last_percent != Some(percent) || elapsed >= HEARTBEAT_INTERVAL
-            }
+        match value {
+            Some(value) => self.last_value != Some(value) || elapsed >= HEARTBEAT_INTERVAL,
             None => true,
         }
     }
@@ -219,12 +222,12 @@ mod tests {
         assert_eq!(progress.finishes, 1);
     }
 
-    fn console_with(last_percent: Option<u64>, last_printed_at: Option<Instant>) -> State {
+    fn console_with(last_value: Option<u64>, last_printed_at: Option<Instant>) -> State {
         State {
             label: Some("copy bytes".to_string()),
             total: Some(1000),
             current: 0,
-            last_percent,
+            last_value,
             last_printed_at,
         }
     }
@@ -316,11 +319,25 @@ mod tests {
     }
 
     #[test]
-    fn unknown_total_emits_after_min_interval() {
+    fn unknown_total_reemits_same_count_only_on_heartbeat() {
         let start = Instant::now();
-        let mut progress = console_with(None, Some(start));
+        let mut progress = console_with(Some(5), Some(start));
         progress.total = None;
-        assert!(progress.should_emit(false, start + Duration::from_millis(600), None));
-        assert!(!progress.should_emit(false, start + Duration::from_millis(100), None));
+        progress.current = 5;
+
+        // 件数が変わらなければハートビート間隔までは出力しない
+        progress.print_at(false, start + Duration::from_millis(600));
+        assert_eq!(progress.last_printed_at, Some(start));
+
+        let later = start + HEARTBEAT_INTERVAL;
+        progress.print_at(false, later);
+        assert_eq!(progress.last_printed_at, Some(later));
+
+        // 件数が変われば最小間隔後すぐに出力する
+        progress.current = 6;
+        let changed = later + Duration::from_millis(600);
+        progress.print_at(false, changed);
+        assert_eq!(progress.last_printed_at, Some(changed));
+        assert_eq!(progress.last_value, Some(6));
     }
 }

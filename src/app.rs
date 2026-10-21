@@ -32,7 +32,10 @@ pub fn backup(config_path: &PathBuf) -> Result<()> {
     let names = unique_source_names(&config.source.paths);
     let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
 
+    // スナップショット作成は数十秒かかることがあるので、待っている間も進捗スレッドに表示させる
+    progress.start("creating VSS snapshot", None);
     let (vss_session, vss_logs) = VssSession::new(&config.source.paths);
+    progress.finish();
     for line in &vss_logs {
         log.info(line)?;
     }

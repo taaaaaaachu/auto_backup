@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -27,8 +27,8 @@ pub fn create_tar_zst_with_progress(
     skip_unreadable_files: bool,
     progress: &mut impl ProgressReporter,
 ) -> Result<Vec<SkippedFile>> {
-    let total_entries = count_archive_entries(source, excludes, skip_unreadable_files)?;
-    progress.start("archive entries", Some(total_entries));
+    let total_bytes = count_archive_bytes(source, excludes, skip_unreadable_files, progress)?;
+    progress.start("archive bytes", Some(total_bytes));
 
     let file = File::create(output)
         .with_context(|| format!("failed to create archive {}", output.display()))?;
@@ -70,22 +70,19 @@ pub fn create_tar_zst_with_progress(
         if entry.file_type().is_dir() {
             tar.append_dir(relative, path)
                 .with_context(|| format!("failed to append directory {}", path.display()))?;
-            progress.advance(1);
         } else if entry.file_type().is_file() {
-            if let Err(error) = tar.append_path_with_name(path, relative) {
+            if let Err(error) = append_file_with_progress(&mut tar, path, relative, progress) {
                 if skip_unreadable_files {
                     skipped_files.push(SkippedFile {
                         path: path.to_path_buf(),
                         reason: error.to_string(),
                     });
-                    progress.advance(1);
                     continue;
                 }
 
                 return Err(error)
                     .with_context(|| format!("failed to append file {}", path.display()));
             }
-            progress.advance(1);
         }
     }
 
@@ -93,6 +90,40 @@ pub fn create_tar_zst_with_progress(
     encoder.finish().context("failed to finish zstd stream")?;
     progress.finish();
     Ok(skipped_files)
+}
+
+/// `tar::Builder::append_path_with_name` と同じヘッダーでファイルを追加しつつ、
+/// 読み込んだバイト数を進捗に反映する。巨大ファイル1つでも進捗が進むようにするため。
+fn append_file_with_progress<W: Write>(
+    tar: &mut tar::Builder<W>,
+    path: &Path,
+    relative: &Path,
+    progress: &mut impl ProgressReporter,
+) -> io::Result<()> {
+    let file = File::open(path)?;
+    let metadata = file.metadata()?;
+    let mut header = tar::Header::new_gnu();
+    header.set_metadata(&metadata);
+    // 読み取り中にファイルが伸びても、ヘッダーに書いたサイズを超えて書き込まない
+    let reader = ProgressReader {
+        inner: file.take(metadata.len()),
+        progress,
+    };
+    tar.append_data(&mut header, relative, reader)
+}
+
+/// 読んだバイト数をそのまま `advance` する `Read` ラッパー。
+struct ProgressReader<'a, R, P> {
+    inner: R,
+    progress: &'a mut P,
+}
+
+impl<R: Read, P: ProgressReporter> Read for ProgressReader<'_, R, P> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let bytes_read = self.inner.read(buf)?;
+        self.progress.advance(bytes_read as u64);
+        Ok(bytes_read)
+    }
 }
 
 pub fn split_archive_with_progress(
@@ -361,12 +392,16 @@ fn ensure_no_existing_entries(archive_path: &Path, output_dir: &Path) -> Result<
     Ok(count)
 }
 
-fn count_archive_entries(
+/// アーカイブ対象のファイルサイズ合計を数える。走査中も止まって見えないよう
+/// 走査した件数を進捗として出す。
+fn count_archive_bytes(
     source: &Path,
     excludes: &GlobSet,
     skip_unreadable_files: bool,
+    progress: &mut impl ProgressReporter,
 ) -> Result<u64> {
-    let mut count = 0u64;
+    progress.start("scan entries", None);
+    let mut total_bytes = 0u64;
     for entry in WalkDir::new(source).follow_links(false) {
         let entry = match entry {
             Ok(entry) => entry,
@@ -388,11 +423,23 @@ fn count_archive_entries(
         if excludes.is_match(relative) {
             continue;
         }
+        if entry.file_type().is_file() {
+            match entry.metadata() {
+                Ok(metadata) => total_bytes = total_bytes.saturating_add(metadata.len()),
+                // 読めないファイルは本処理側でスキップ扱いになるので合計に含めない
+                Err(_) if skip_unreadable_files => {}
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to read metadata {}", path.display()))
+                }
+            }
+        }
         if entry.file_type().is_dir() || entry.file_type().is_file() {
-            count += 1;
+            progress.advance(1);
         }
     }
-    Ok(count)
+    progress.finish();
+    Ok(total_bytes)
 }
 
 #[cfg(test)]
@@ -449,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn create_tar_zst_reports_entry_progress() {
+    fn create_tar_zst_reports_byte_progress() {
         let dir = TestDir::new("archive_progress");
         let source = dir.path.join("source");
         std::fs::create_dir(&source).expect("failed to create source");
@@ -463,11 +510,45 @@ mod tests {
 
         assert_eq!(
             progress.starts,
-            vec![("archive entries".to_string(), Some(1))]
+            vec![
+                ("scan entries".to_string(), None),
+                ("archive bytes".to_string(), Some(5)),
+            ]
         );
-        assert_eq!(progress.advanced_by, 1);
-        assert_eq!(progress.finishes, 1);
+        // 走査した1件 + アーカイブした5バイト
+        assert_eq!(progress.advanced_by, 1 + 5);
+        assert_eq!(progress.finishes, 2);
         assert!(output.exists());
+    }
+
+    #[test]
+    fn archive_round_trips_files_including_long_paths() {
+        let dir = TestDir::new("archive_round_trip");
+        let source = dir.path.join("source");
+        // tar の 100 バイト名前制限を超えるパス(GNU long name 拡張が必要)
+        let long_dir = source.join("d".repeat(60)).join("e".repeat(60));
+        std::fs::create_dir_all(&long_dir).expect("failed to create source");
+        std::fs::write(source.join("small.txt"), "hello").expect("failed to write file");
+        let big = vec![7u8; 3 * 1024 * 1024 + 123];
+        std::fs::write(long_dir.join("big.bin"), &big).expect("failed to write file");
+        let archive = dir.path.join("backup.tar.zst");
+        let excludes = build_exclude_set(&[]).expect("failed to build excludes");
+
+        create_tar_zst_with_progress(&source, &archive, 1, &excludes, false, &mut NoProgress)
+            .expect("failed to create archive");
+        let restored = dir.path.join("restored");
+        restore_tar_zst_with_progress(&archive, &restored, &mut NoProgress)
+            .expect("failed to restore archive");
+
+        assert_eq!(
+            std::fs::read(restored.join("small.txt")).expect("small.txt missing"),
+            b"hello"
+        );
+        let restored_long_dir = restored.join("d".repeat(60)).join("e".repeat(60));
+        assert_eq!(
+            std::fs::read(restored_long_dir.join("big.bin")).expect("big.bin missing"),
+            big
+        );
     }
 
     #[test]
