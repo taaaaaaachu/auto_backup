@@ -177,3 +177,7 @@ mise exec rust -- cargo test
 ```
 
 VSSを使う部分は管理者権限が必要なため、自動テストの対象外です。変更したときは [docs/manual-testing-vss.md](docs/manual-testing-vss.md) の手順で手動確認してください。
+
+## ライセンス
+
+[MIT License](LICENSE)
