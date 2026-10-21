@@ -1,112 +1,103 @@
 # auto_backup
 
-`auto_backup` は、ディレクトリを定期バックアップするための小さなCLIアプリです。
+指定したフォルダを圧縮して、別の場所(外付けドライブやNASなど)へバックアップする Windows 用のコマンドラインツールです。
 
-TOML設定ファイルに書いたディレクトリを `tar.zst` 形式で圧縮し、指定サイズを超える場合は分割します。圧縮後はSHA-256チェックサム付きのマニフェストを作成し、設定された保存先へコピーします。コピー後にサイズとチェックサムを検証し、成功した場合だけ作業用のローカル圧縮ファイルを削除します。
+- フォルダを `tar.zst` 形式で圧縮し、大きい場合は指定サイズごとに分割して保存します
+- 保存先にコピーしたあと、ファイルが壊れていないかをチェックサムで確かめます
+- 他のアプリが開いているファイルもバックアップできます(管理者として実行した場合)
+- 1回実行して終わるコマンドなので、定期的なバックアップは Windows タスクスケジューラから呼び出します
 
-アプリ自体は1回実行のコマンドとして作っています。定期実行は Windows タスクスケジューラ、cron、その他のスケジューラから呼び出してください。
+## インストール
 
-本アプリは Windows 専用です。
-
-## 機能
-
-- TOML設定ファイルに対応
-- 複数のバックアップ元ディレクトリに対応
-- `tar.zst` 形式で圧縮
-- 設定した最大サイズを超えた場合に分割
-- 分割ファイルと圧縮ファイル全体のSHA-256チェックサムを記録
-- `target/**`、`.git/**`、`node_modules/**` などの除外パターンに対応
-- バックアップ元の読み取りに Windows VSS (Volume Shadow Copy Service) を使用し、他プロセスに開かれているファイルもバックアップ対象にできる
-- 保存先へコピー後、チェックサム検証に成功してから作業ファイルを削除
-- 復元時は分割ファイルを自動検出して結合
-- 復元先ディレクトリをコマンドで指定可能
-- 復元先に既存ファイルまたは既存ディレクトリがある場合はエラー
-- 追記形式のログ出力
-- 処理中の進捗をコンソールへ定期表示(巨大ファイル1つの処理中も止まって見えない)
-
-## ビルド
-
-通常のCargoでビルドできます。
+Rust(Cargo)でビルドします。
 
 ```powershell
 cargo build --release
 ```
 
-実行ファイルは次の場所に作成されます。
+`target/release/auto_backup.exe` ができるので、好きな場所に置いて使います。
 
-```text
-target/release/auto_backup.exe
-```
+## はじめかた
 
-## 設定
+1. [config.example.toml](config.example.toml) をコピーして `config.toml` を作り、バックアップしたいフォルダと保存先を書きます。
 
-[config.example.toml](config.example.toml) を `config.toml` としてコピーし、環境に合わせて編集します。
+   ```toml
+   [source]
+   paths = ["C:/Users/name/Documents"]
+
+   [destination]
+   path = "D:/backups"
+
+   [archive]
+   max_part_size_mb = 500
+   ```
+
+2. 管理者として開いたターミナルでバックアップを実行します。
+
+   ```powershell
+   auto_backup backup --config config.toml
+   ```
+
+3. 保存先にバックアップファイルができます。
+
+   ```text
+   D:/backups/20260612_010000_documents.tar.zst
+   D:/backups/20260612_010000_documents.manifest.toml
+   ```
+
+## 設定ファイル
+
+設定ファイルはTOML形式です。`[source]`・`[destination]`・`[archive]` の `max_part_size_mb` は必須で、それ以外は省略すると既定値が使われます。すべての項目を書いた例は [config.example.toml](config.example.toml) を見てください。
+
+### `[source]`
+
+| 項目 | 説明 |
+| --- | --- |
+| `paths` | バックアップするフォルダの一覧。複数指定できます。 |
+
+### `[destination]`
+
+| 項目 | 説明 |
+| --- | --- |
+| `path` | バックアップファイルの保存先フォルダ。なければ作成されます。 |
+
+### `[archive]`
+
+| 項目 | 既定値 | 説明 |
+| --- | --- | --- |
+| `max_part_size_mb` | (必須) | バックアップファイル1つあたりの最大サイズ(MB)。これを超えると分割されます。 |
+| `compression_level` | `6` | zstdの圧縮レベル。大きいほど小さくなりますが、時間がかかります。 |
+
+### `[exclude]`
+
+| 項目 | 既定値 | 説明 |
+| --- | --- | --- |
+| `patterns` | なし | バックアップから除外するファイル・フォルダのパターン。バックアップ元フォルダからの相対パスで書きます。 |
 
 ```toml
-[source]
-paths = [
-  "C:/Users/name/Documents",
-  "C:/dev/project"
-]
-
-[destination]
-path = "D:/backups"
-
-[archive]
-max_part_size_mb = 500
-compression_level = 6
-
 [exclude]
-patterns = [
-  "target/**",
-  "node_modules/**",
-  ".git/**",
-  "*.tmp"
-]
-
-[behavior]
-verify_after_copy = true
-delete_local_archive_after_copy = true
-skip_unreadable_files = false
-
-[work]
-path = "C:/tmp/auto_backup"
-
-[log]
-path = "C:/tmp/auto_backup/auto_backup.log"
+patterns = ["target/**", "node_modules/**", ".git/**", "*.tmp"]
 ```
 
-## 設定項目
+### `[behavior]`
 
-`source.paths`
-: 圧縮するディレクトリの一覧です。
+| 項目 | 既定値 | 説明 |
+| --- | --- | --- |
+| `verify_after_copy` | `true` | 保存先にコピーしたファイルを、サイズとチェックサムで確かめます。 |
+| `delete_local_archive_after_copy` | `true` | コピー(と確認)に成功したら、作業フォルダに作った圧縮ファイルを削除します。 |
+| `skip_unreadable_files` | `false` | `true` にすると、読み取れないファイルがあっても飛ばしてバックアップを続けます。`false` の場合はエラーで止まります。 |
 
-`destination.path`
-: 圧縮ファイル、分割ファイル、マニフェストのコピー先ディレクトリです。
+### `[work]`
 
-`archive.max_part_size_mb`
-: コピーされる圧縮ファイル1つあたりの最大サイズです。圧縮後のファイルがこの値を超えた場合、`.part001`、`.part002` のように分割されます。
+| 項目 | 既定値 | 説明 |
+| --- | --- | --- |
+| `path` | OSの一時フォルダ配下の `auto_backup` | 圧縮・分割のための作業フォルダ。圧縮後のバックアップファイルを置けるだけの空き容量が必要です。 |
 
-`archive.compression_level`
-: zstdの圧縮レベルです。通常は `6` のままで問題ありません。
+### `[log]`
 
-`exclude.patterns`
-: バックアップ元ディレクトリ内の相対パスに対して適用する除外パターンです。
-
-`behavior.verify_after_copy`
-: `true` の場合、保存先へコピーしたファイルをサイズとSHA-256チェックサムで検証します。
-
-`behavior.delete_local_archive_after_copy`
-: `true` の場合、保存先へのコピーと検証に成功したあと、作業ディレクトリ内の圧縮ファイルを削除します。
-
-`behavior.skip_unreadable_files`
-: `true` の場合、VSS 経由でも読み取れなかったファイルをスキップしてバックアップを続行します。スキップしたファイルはログとマニフェストの `skipped_files` に記録されます。既定値は `false` です。
-
-`work.path`
-: 圧縮や分割のために使う作業ディレクトリです。省略するとOSの一時ディレクトリ配下を使います。
-
-`log.path`
-: ログの出力先です。省略するとカレントディレクトリの `auto_backup.log` に出力します。
+| 項目 | 既定値 | 説明 |
+| --- | --- | --- |
+| `path` | 実行したフォルダの `auto_backup.log` | ログの出力先。実行のたびに追記されます。 |
 
 ## バックアップ
 
@@ -114,96 +105,78 @@ path = "C:/tmp/auto_backup/auto_backup.log"
 auto_backup backup --config config.toml
 ```
 
-バックアップファイル名には、実行日時とバックアップ元ディレクトリ名が入ります。
+`paths` に書いたフォルダごとに、次のファイルが保存先に作られます。ファイル名は「実行日時_フォルダ名」です。フォルダ名は小文字になり、英数字・`-`・`_` 以外の文字は `_` に置き換わります。フォルダ名が重複する場合は、親フォルダの名前も付けて区別します。
 
-分割された場合の出力例:
+- `max_part_size_mb` 以下に収まった場合
 
-```text
-20260612_010000_documents.part001
-20260612_010000_documents.part002
-20260612_010000_documents.manifest.toml
-```
+  ```text
+  20260612_010000_documents.tar.zst
+  20260612_010000_documents.manifest.toml
+  ```
 
-複数のバックアップ元で末尾のディレクトリ名が重複する場合は、親ディレクトリ名を順に足して一意になる名前を作ります。それでも一意にならない場合は短いハッシュを付けます。
+- `max_part_size_mb` を超えた場合
 
-## 進捗表示
+  ```text
+  20260612_010000_documents.part001
+  20260612_010000_documents.part002
+  20260612_010000_documents.manifest.toml
+  ```
 
-バックアップ・復元中は、各工程の進捗をコンソールへ出力します。
+`.manifest.toml` は、分割ファイルの一覧とチェックサムを記録したファイルです。復元に使うので、バックアップファイルと一緒に保管してください。`skip_unreadable_files = true` で飛ばしたファイルも、ここの `skipped_files` とログに記録されます。
+
+### 使用中のファイルのバックアップ
+
+管理者として実行すると、Windows のボリュームシャドウコピー(VSS)を使ってフォルダを読み取ります。他のアプリが開いたままのファイルも含めて、実行した時点の状態をそのままバックアップできます。
+
+管理者として実行しなかった場合は、フォルダを直接読み取ります。バックアップは行われますが、他のアプリがロックしているファイルは読み取れません(`skip_unreadable_files` の設定に従って、飛ばすかエラーで止まります)。どちらの方法で読み取ったかはログに記録されます。
+
+### 進捗の表示
+
+実行中は、いま何をしているかと進み具合がコンソールに表示されます。
 
 ```text
 creating VSS snapshot...
 scan entries: 1234
 archive bytes: 536870918/1073741830 (50%)
-checksum bytes: ...
-split archive bytes: ...
-copy bytes: ...
+copy bytes: 209715200/524288000 (40%)
 ```
 
-| 工程 | ラベル | 単位 |
-| --- | --- | --- |
-| VSSシャドウコピー作成 | `creating VSS snapshot` | なし(経過のみ) |
-| バックアップ対象の走査 | `scan entries` | 件数 |
-| 圧縮 | `archive bytes` | 読み込んだ元ファイルのバイト数 |
-| チェックサム計算・コピー後検証 | `checksum bytes` | バイト数 |
-| 分割 | `split archive bytes` | バイト数 |
-| 保存先へのコピー | `copy bytes` | バイト数 |
-| 分割ファイルの結合(復元) | `combine bytes` | バイト数 |
-| 復元前の既存ファイルチェック | `check entries` | アーカイブ(圧縮後)を読んだバイト数 |
-| 展開(復元) | `restore bytes` | アーカイブ(圧縮後)を読んだバイト数 |
-
-進捗は処理とは別のスレッドから出力します。値が変わればすぐに、変わらなくても2秒ごとに同じ値を再出力するため、処理がどこで待っていても表示は途切れません。同じ値が長時間続く場合は、コピー先の応答停止などでI/Oが詰まっている可能性があります。
-
-復元時の進捗は圧縮後のサイズ基準のため、ファイルごとの圧縮率の差によって進み方が一定にならないことがあります。
-
-実行中はコンソールの簡易編集モード(QuickEdit)を無効にし、終了時に元へ戻します。簡易編集モードのままウィンドウ内の文字を選択すると、出力がブロックされて処理全体が止まってしまうためです。
-
-## VSS (Volume Shadow Copy Service)
-
-バックアップ元ディレクトリの読み取りは、常に Windows VSS のシャドウコピー経由で行われます。設定でON/OFFを切り替えることはできません。同一ボリューム上に複数の `source.paths` がある場合は、実行中1つのシャドウコピーを共有し、バックアップ完了後にまとめて削除します。
-
-VSSのシャドウコピー作成には管理者権限が必要です。管理者権限がない場合や、VSSサービスが無効、対象ボリュームがVSS非対応(ネットワーク共有など)といった理由でシャドウコピーが作成できない場合は、警告ログを出したうえで該当ボリュームを直接読み取りにフォールバックします。バックアップ自体は失敗しません。
-
-Windows タスクスケジューラから実行する場合は、タスクのプロパティで「最上位の特権で実行する」を有効にしてください。有効にしない場合、常にフォールバック(直接読み取り)経路になり、ロックされたファイルは `behavior.skip_unreadable_files` の設定に従って従来通り扱われます。
-
-各バックアップ元でVSSを使用したか、フォールバックしたかは `auto_backup.log` に記録されます(マニフェストには記録されません)。
-
-VSS周りは実機・管理者権限が必要なため自動テストの対象外です。変更時は [docs/manual-testing-vss.md](docs/manual-testing-vss.md) の手順で手動確認してください。
+数字が変わらなくても2秒ごとに同じ行が表示されます。同じ数字のまま長く止まっている場合は、保存先のドライブやネットワークが応答していない可能性があります。
 
 ## 復元
 
-復元コマンドは、マニフェスト、単一の `.tar.zst` ファイル、または任意の分割ファイルを入力として受け取れます。
-
 ```powershell
-auto_backup restore --config config.toml --input D:/backups/20260612_010000_documents.manifest.toml --output C:/restore
+auto_backup restore --config config.toml --input <バックアップファイル> --output <復元先フォルダ>
 ```
 
-分割ファイルを指定した場合は、同じディレクトリにあるマニフェストを使って自動的に全パートを検出し、結合してから復元します。
-
-次の入力はいずれも有効です。
+`--input` には次のどれを指定しても復元できます。分割されている場合は、同じフォルダにある残りの分割ファイルが自動で使われます。
 
 ```powershell
+# マニフェスト
 auto_backup restore --config config.toml --input D:/backups/20260612_010000_documents.manifest.toml --output C:/restore
+# 分割ファイルのどれか1つ
 auto_backup restore --config config.toml --input D:/backups/20260612_010000_documents.part001 --output C:/restore
+# 分割されていないバックアップファイル
 auto_backup restore --config config.toml --input D:/backups/20260612_010000_documents.tar.zst --output C:/restore
 ```
 
-復元先に既存ファイルまたは既存ディレクトリがある場合、復元は失敗します。安全に使うため、空のディレクトリを復元先に指定してください。
+復元前に、マニフェストに記録したチェックサムと照合し、ファイルが壊れている場合は復元しません。また、復元先に同じ名前のファイルやフォルダが1つでもある場合は、何も展開せずに中止します。空のフォルダを復元先に指定してください。
 
-## 開発時の確認
+## 定期的に実行する
+
+Windows タスクスケジューラで、次のようにタスクを作成します。
+
+- **プログラム**: `auto_backup.exe` のフルパス
+- **引数**: `backup --config C:/path/to/config.toml`
+- **「最上位の特権で実行する」にチェック**: 使用中のファイルもバックアップするために必要です
+- `[log]` の `path` を省略する場合は、**開始(作業フォルダー)** も指定しておくと、ログの場所が決まります
+
+## 開発
 
 ```powershell
 mise exec rust -- cargo fmt --check
-mise exec rust -- cargo check
-mise exec rust -- cargo test
 mise exec rust -- cargo clippy --all-targets
+mise exec rust -- cargo test
 ```
 
-## 定期実行
-
-Windows タスクスケジューラを使う場合は、リリースビルドした実行ファイルを指定し、引数に次のような内容を設定します。
-
-```text
-backup --config C:/path/to/config.toml
-```
-
-`log.path` を省略する場合は、タスクの作業ディレクトリも固定しておくとログの場所が分かりやすくなります。
+VSSを使う部分は管理者権限が必要なため、自動テストの対象外です。変更したときは [docs/manual-testing-vss.md](docs/manual-testing-vss.md) の手順で手動確認してください。
