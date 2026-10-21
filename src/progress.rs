@@ -12,6 +12,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 const TICK_INTERVAL: Duration = Duration::from_millis(500);
 
 pub trait ProgressReporter {
+    /// `total` を指定した進捗はバイト数として、`None` の進捗は件数として表示する。
     fn start(&mut self, label: &str, total: Option<u64>);
     fn advance(&mut self, amount: u64);
     fn finish(&mut self);
@@ -135,8 +136,8 @@ impl State {
                 }
                 println!(
                     "{label}: {}/{} ({}%)",
-                    self.current.min(total),
-                    total,
+                    format_size(self.current.min(total)),
+                    format_size(total),
                     percent
                 );
                 self.last_value = Some(percent);
@@ -182,6 +183,20 @@ impl State {
             Some(value) => self.last_value != Some(value) || elapsed >= HEARTBEAT_INTERVAL,
             None => true,
         }
+    }
+}
+
+/// バイト数を B / MB / GB で表示する。巨大ファイルでも少し進めば表示が変わるよう、
+/// MB は小数2桁(約10KB単位)、GB は小数3桁(約1MB単位)まで出す。
+fn format_size(bytes: u64) -> String {
+    const MB: u64 = 1024 * 1024;
+    const GB: u64 = 1024 * MB;
+    if bytes >= GB {
+        format!("{:.3} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.2} MB", bytes as f64 / MB as f64)
+    } else {
+        format!("{bytes} B")
     }
 }
 
@@ -232,6 +247,22 @@ mod tests {
             last_value,
             last_printed_at,
         }
+    }
+
+    #[test]
+    fn format_size_switches_unit_by_magnitude() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(1024 * 1024 - 1), "1048575 B");
+        assert_eq!(format_size(1024 * 1024), "1.00 MB");
+        assert_eq!(format_size(1536 * 1024), "1.50 MB");
+        assert_eq!(format_size(1024 * 1024 * 1024), "1.000 GB");
+        assert_eq!(format_size(1073741830 / 2 * 3), "1.500 GB");
+    }
+
+    #[test]
+    fn format_size_changes_with_one_megabyte_at_gigabyte_scale() {
+        let base = 100 * 1024 * 1024 * 1024u64;
+        assert_ne!(format_size(base), format_size(base + 1024 * 1024));
     }
 
     #[test]

@@ -134,8 +134,8 @@ auto_backup backup --config config.toml
 ```text
 creating VSS snapshot...
 scan entries: 1234
-archive bytes: 536870918/1073741830 (50%)
-copy bytes: 209715200/524288000 (40%)
+archive bytes: 51.374 GB/102.748 GB (50%)
+copy bytes: 200.00 MB/500.00 MB (40%)
 ```
 
 数字が変わらなくても2秒ごとに同じ行が表示されます。同じ数字のまま長く止まっている場合は、保存先のドライブやネットワークが応答していない可能性があります。
