@@ -61,7 +61,9 @@ impl ConsoleProgress {
 
 fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
     // 片方のスレッドがパニックしても、進捗表示のせいで処理全体を止めない
-    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl Default for ConsoleProgress {
@@ -297,12 +299,18 @@ mod tests {
     fn ticker_emits_heartbeat_without_advance() {
         let mut progress = ConsoleProgress::new();
         progress.start("copy bytes", Some(1000));
-        let started = progress.state().last_printed_at.expect("start should print");
+        let started = progress
+            .state()
+            .last_printed_at
+            .expect("start should print");
 
         // advance() を一切呼ばない(処理スレッドが1つの I/O で詰まっている状態)
         thread::sleep(HEARTBEAT_INTERVAL + TICK_INTERVAL * 2);
 
-        let last = progress.state().last_printed_at.expect("should have printed");
+        let last = progress
+            .state()
+            .last_printed_at
+            .expect("should have printed");
         assert!(last > started, "ticker thread should re-emit progress");
     }
 

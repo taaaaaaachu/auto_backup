@@ -8,6 +8,7 @@ paths = [
 path = "D:/backups"
 
 [archive]
+# Omit this to keep each backup as a single file without splitting.
 max_part_size_mb = 500
 compression_level = 6
 

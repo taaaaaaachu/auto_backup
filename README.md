@@ -27,9 +27,6 @@ cargo build --release
 
    [destination]
    path = "D:/backups"
-
-   [archive]
-   max_part_size_mb = 500
    ```
 
 2. 管理者として開いたターミナルでバックアップを実行します。
@@ -47,7 +44,7 @@ cargo build --release
 
 ## 設定ファイル
 
-設定ファイルはTOML形式です。`[source]`・`[destination]`・`[archive]` の `max_part_size_mb` は必須で、それ以外は省略すると既定値が使われます。すべての項目を書いた例は [config.example.toml](config.example.toml) を見てください。
+設定ファイルはTOML形式です。必須なのは `[source]` と `[destination]` だけで、それ以外は省略すると既定値が使われます。すべての項目を書いた例は [config.example.toml](config.example.toml) を見てください。
 
 ### `[source]`
 
@@ -65,7 +62,7 @@ cargo build --release
 
 | 項目 | 既定値 | 説明 |
 | --- | --- | --- |
-| `max_part_size_mb` | (必須) | バックアップファイル1つあたりの最大サイズ(MB)。これを超えると分割されます。 |
+| `max_part_size_mb` | なし(分割しない) | バックアップファイル1つあたりの最大サイズ(MB)。これを超えると分割されます。FAT32のドライブやクラウドストレージなど、ファイルサイズに上限がある保存先で使います。 |
 | `compression_level` | `6` | zstdの圧縮レベル。大きいほど小さくなりますが、時間がかかります。 |
 
 ### `[exclude]`
@@ -107,14 +104,14 @@ auto_backup backup --config config.toml
 
 `paths` に書いたフォルダごとに、次のファイルが保存先に作られます。ファイル名は「実行日時_フォルダ名」です。フォルダ名は小文字になり、英数字・`-`・`_` 以外の文字は `_` に置き換わります。フォルダ名が重複する場合は、親フォルダの名前も付けて区別します。
 
-- `max_part_size_mb` 以下に収まった場合
+- 分割しない場合(`max_part_size_mb` を省略した場合、または指定サイズ以下に収まった場合)
 
   ```text
   20260612_010000_documents.tar.zst
   20260612_010000_documents.manifest.toml
   ```
 
-- `max_part_size_mb` を超えた場合
+- `max_part_size_mb` を超えて分割された場合
 
   ```text
   20260612_010000_documents.part001
