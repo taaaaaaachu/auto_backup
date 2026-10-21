@@ -103,7 +103,7 @@ pub fn split_archive_with_progress(
     source_path: PathBuf,
     progress: &mut impl ProgressReporter,
 ) -> Result<(Manifest, Vec<PathBuf>)> {
-    let full_sha256 = sha256_file(archive_path)?;
+    let full_sha256 = sha256_file_with_progress(archive_path, progress)?;
     let full_size = archive_path.metadata()?.len();
     let parent = archive_path
         .parent()
@@ -195,10 +195,6 @@ pub fn split_archive_with_progress(
     };
     progress.finish();
     Ok((manifest, paths))
-}
-
-pub fn sha256_file(path: &Path) -> Result<String> {
-    sha256_file_with_progress(path, &mut NoProgress)
 }
 
 pub fn sha256_file_with_progress(
@@ -494,10 +490,13 @@ mod tests {
 
         assert_eq!(
             progress.starts,
-            vec![("split archive bytes".to_string(), Some(10))]
+            vec![
+                ("checksum bytes".to_string(), Some(10)),
+                ("split archive bytes".to_string(), Some(10)),
+            ]
         );
-        assert_eq!(progress.advanced_by, 10);
-        assert_eq!(progress.finishes, 1);
+        assert_eq!(progress.advanced_by, 20);
+        assert_eq!(progress.finishes, 2);
         assert_eq!(parts.len(), 3);
     }
 }

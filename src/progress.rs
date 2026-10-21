@@ -1,3 +1,6 @@
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 /// 連続出力の最小間隔。これより短い間隔では出力しない。
@@ -5,6 +8,8 @@ const MIN_INTERVAL: Duration = Duration::from_millis(500);
 /// パーセンテージが変化しなくても、この間隔を過ぎたら「動いている」ことを
 /// 示すために同じパーセンテージで再出力する(ハートビート)。
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
+/// 進捗スレッドが状態を見に行く間隔。
+const TICK_INTERVAL: Duration = Duration::from_millis(500);
 
 pub trait ProgressReporter {
     fn start(&mut self, label: &str, total: Option<u64>);
@@ -20,7 +25,89 @@ impl ProgressReporter for NoProgress {
     fn finish(&mut self) {}
 }
 
+/// 進捗をコンソールに出力する。
+///
+/// 処理スレッドは `advance()` で状態を更新するだけでなく、専用のスレッドが
+/// 定期的に状態を見て出力する。そのため1つの巨大ファイルの圧縮などで
+/// `advance()` が長時間呼ばれなくても、ハートビートは途切れない。
 pub struct ConsoleProgress {
+    state: Arc<Mutex<State>>,
+    stop: Option<Sender<()>>,
+    ticker: Option<JoinHandle<()>>,
+}
+
+impl ConsoleProgress {
+    pub fn new() -> Self {
+        let state = Arc::new(Mutex::new(State::default()));
+        let (stop, stopped) = mpsc::channel::<()>();
+        let ticker_state = Arc::clone(&state);
+        let ticker = thread::spawn(move || {
+            // 送信側が drop されると Disconnected になりループを抜ける
+            while let Err(RecvTimeoutError::Timeout) = stopped.recv_timeout(TICK_INTERVAL) {
+                lock(&ticker_state).print(false);
+            }
+        });
+        Self {
+            state,
+            stop: Some(stop),
+            ticker: Some(ticker),
+        }
+    }
+
+    fn state(&self) -> MutexGuard<'_, State> {
+        lock(&self.state)
+    }
+}
+
+fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
+    // 片方のスレッドがパニックしても、進捗表示のせいで処理全体を止めない
+    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+impl Default for ConsoleProgress {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for ConsoleProgress {
+    fn drop(&mut self) {
+        drop(self.stop.take());
+        if let Some(ticker) = self.ticker.take() {
+            ticker.join().ok();
+        }
+    }
+}
+
+impl ProgressReporter for ConsoleProgress {
+    fn start(&mut self, label: &str, total: Option<u64>) {
+        let mut state = self.state();
+        state.label = Some(label.to_string());
+        state.total = total;
+        state.current = 0;
+        state.last_percent = None;
+        state.last_printed_at = None;
+        state.print(true);
+    }
+
+    fn advance(&mut self, amount: u64) {
+        let mut state = self.state();
+        state.current = state.current.saturating_add(amount);
+        state.print(false);
+    }
+
+    fn finish(&mut self) {
+        let mut state = self.state();
+        if let Some(total) = state.total {
+            state.current = total;
+        }
+        state.print(true);
+        state.label = None;
+    }
+}
+
+#[derive(Default)]
+struct State {
     label: Option<String>,
     total: Option<u64>,
     current: u64,
@@ -28,17 +115,7 @@ pub struct ConsoleProgress {
     last_printed_at: Option<Instant>,
 }
 
-impl ConsoleProgress {
-    pub fn new() -> Self {
-        Self {
-            label: None,
-            total: None,
-            current: 0,
-            last_percent: None,
-            last_printed_at: None,
-        }
-    }
-
+impl State {
     fn print(&mut self, force: bool) {
         self.print_at(force, Instant::now());
     }
@@ -103,36 +180,6 @@ impl ConsoleProgress {
     }
 }
 
-impl Default for ConsoleProgress {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ProgressReporter for ConsoleProgress {
-    fn start(&mut self, label: &str, total: Option<u64>) {
-        self.label = Some(label.to_string());
-        self.total = total;
-        self.current = 0;
-        self.last_percent = None;
-        self.last_printed_at = None;
-        self.print(true);
-    }
-
-    fn advance(&mut self, amount: u64) {
-        self.current = self.current.saturating_add(amount);
-        self.print(false);
-    }
-
-    fn finish(&mut self) {
-        if let Some(total) = self.total {
-            self.current = total;
-        }
-        self.print(true);
-        self.label = None;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,8 +219,8 @@ mod tests {
         assert_eq!(progress.finishes, 1);
     }
 
-    fn console_with(last_percent: Option<u64>, last_printed_at: Option<Instant>) -> ConsoleProgress {
-        ConsoleProgress {
+    fn console_with(last_percent: Option<u64>, last_printed_at: Option<Instant>) -> State {
+        State {
             label: Some("copy bytes".to_string()),
             total: Some(1000),
             current: 0,
@@ -241,6 +288,31 @@ mod tests {
         let later = start + HEARTBEAT_INTERVAL + Duration::from_millis(1);
         progress.print_at(false, later);
         assert_eq!(progress.last_printed_at, Some(later));
+    }
+
+    #[test]
+    fn ticker_emits_heartbeat_without_advance() {
+        let mut progress = ConsoleProgress::new();
+        progress.start("copy bytes", Some(1000));
+        let started = progress.state().last_printed_at.expect("start should print");
+
+        // advance() を一切呼ばない(処理スレッドが1つの I/O で詰まっている状態)
+        thread::sleep(HEARTBEAT_INTERVAL + TICK_INTERVAL * 2);
+
+        let last = progress.state().last_printed_at.expect("should have printed");
+        assert!(last > started, "ticker thread should re-emit progress");
+    }
+
+    #[test]
+    fn ticker_is_silent_after_finish() {
+        let mut progress = ConsoleProgress::new();
+        progress.start("copy bytes", Some(1000));
+        progress.finish();
+        let finished = progress.state().last_printed_at;
+
+        thread::sleep(HEARTBEAT_INTERVAL + TICK_INTERVAL * 2);
+
+        assert_eq!(progress.state().last_printed_at, finished);
     }
 
     #[test]
