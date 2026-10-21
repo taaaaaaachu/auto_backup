@@ -22,6 +22,7 @@ TOML設定ファイルに書いたディレクトリを `tar.zst` 形式で圧�
 - 復元先ディレクトリをコマンドで指定可能
 - 復元先に既存ファイルまたは既存ディレクトリがある場合はエラー
 - 追記形式のログ出力
+- 処理中の進捗をコンソールへ定期表示(巨大ファイル1つの処理中も止まって見えない)
 
 ## ビルド
 
@@ -125,6 +126,37 @@ auto_backup backup --config config.toml
 
 複数のバックアップ元で末尾のディレクトリ名が重複する場合は、親ディレクトリ名を順に足して一意になる名前を作ります。それでも一意にならない場合は短いハッシュを付けます。
 
+## 進捗表示
+
+バックアップ・復元中は、各工程の進捗をコンソールへ出力します。
+
+```text
+creating VSS snapshot...
+scan entries: 1234
+archive bytes: 536870918/1073741830 (50%)
+checksum bytes: ...
+split archive bytes: ...
+copy bytes: ...
+```
+
+| 工程 | ラベル | 単位 |
+| --- | --- | --- |
+| VSSシャドウコピー作成 | `creating VSS snapshot` | なし(経過のみ) |
+| バックアップ対象の走査 | `scan entries` | 件数 |
+| 圧縮 | `archive bytes` | 読み込んだ元ファイルのバイト数 |
+| チェックサム計算・コピー後検証 | `checksum bytes` | バイト数 |
+| 分割 | `split archive bytes` | バイト数 |
+| 保存先へのコピー | `copy bytes` | バイト数 |
+| 分割ファイルの結合(復元) | `combine bytes` | バイト数 |
+| 復元前の既存ファイルチェック | `check entries` | アーカイブ(圧縮後)を読んだバイト数 |
+| 展開(復元) | `restore bytes` | アーカイブ(圧縮後)を読んだバイト数 |
+
+進捗は処理とは別のスレッドから出力します。値が変わればすぐに、変わらなくても2秒ごとに同じ値を再出力するため、処理がどこで待っていても表示は途切れません。同じ値が長時間続く場合は、コピー先の応答停止などでI/Oが詰まっている可能性があります。
+
+復元時の進捗は圧縮後のサイズ基準のため、ファイルごとの圧縮率の差によって進み方が一定にならないことがあります。
+
+実行中はコンソールの簡易編集モード(QuickEdit)を無効にし、終了時に元へ戻します。簡易編集モードのままウィンドウ内の文字を選択すると、出力がブロックされて処理全体が止まってしまうためです。
+
 ## VSS (Volume Shadow Copy Service)
 
 バックアップ元ディレクトリの読み取りは、常に Windows VSS のシャドウコピー経由で行われます。設定でON/OFFを切り替えることはできません。同一ボリューム上に複数の `source.paths` がある場合は、実行中1つのシャドウコピーを共有し、バックアップ完了後にまとめて削除します。
@@ -163,6 +195,7 @@ auto_backup restore --config config.toml --input D:/backups/20260612_010000_docu
 mise exec rust -- cargo fmt --check
 mise exec rust -- cargo check
 mise exec rust -- cargo test
+mise exec rust -- cargo clippy --all-targets
 ```
 
 ## 定期実行
