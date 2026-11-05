@@ -10,6 +10,7 @@ use crate::config::{Config, RestoreConfig};
 use crate::manifest::Manifest;
 use crate::paths::unique_source_names;
 use crate::progress::{ConsoleProgress, ProgressReporter};
+use crate::update;
 use crate::vss::VssSession;
 
 pub fn backup(config_path: &PathBuf) -> Result<()> {
@@ -17,6 +18,15 @@ pub fn backup(config_path: &PathBuf) -> Result<()> {
     let mut log = Logger::new(&config.log_path())?;
     let mut progress = ConsoleProgress::new();
     log.info("backup started")?;
+    if config.behavior.check_for_updates {
+        match update::newer_version() {
+            Ok(Some(version)) => log.info(&format!(
+                "new version {version} is available. run `auto_backup update` to update"
+            ))?,
+            Ok(None) => {}
+            Err(err) => log.warn(&format!("update check failed: {err:#}"))?,
+        }
+    }
 
     std::fs::create_dir_all(&config.destination.path).with_context(|| {
         format!(

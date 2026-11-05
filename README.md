@@ -6,10 +6,13 @@
 - 保存先にコピーしたあと、ファイルが壊れていないかをチェックサムで確かめます
 - 他のアプリが開いているファイルもバックアップできます(管理者として実行した場合)
 - 1回実行して終わるコマンドなので、定期的なバックアップは Windows タスクスケジューラから呼び出します
+- `auto_backup update` で最新版に更新できます
 
 ## インストール
 
-Rust(Cargo)でビルドします。
+[Releases](https://github.com/taaaaaaachu/auto_backup/releases) から `auto_backup-x86_64-pc-windows-msvc.zip` をダウンロードし、中の `auto_backup.exe` を好きな場所に置きます。
+
+自分でビルドする場合は Rust(Cargo)を使います。
 
 ```powershell
 cargo build --release
@@ -83,6 +86,7 @@ patterns = ["target/**", "node_modules/**", ".git/**", "*.tmp"]
 | `verify_after_copy` | `true` | 保存先にコピーしたファイルを、サイズとチェックサムで確かめます。 |
 | `delete_local_archive_after_copy` | `true` | コピー(と確認)に成功したら、作業フォルダに作った圧縮ファイルを削除します。 |
 | `skip_unreadable_files` | `false` | `true` にすると、読み取れないファイルがあっても飛ばしてバックアップを続けます。`false` の場合はエラーで止まります。 |
+| `check_for_updates` | `true` | バックアップのたびに新しい版が出ていないか GitHub に確かめ、出ていればログに案内を書きます。確かめられなかった場合も警告をログに書くだけで、バックアップは続けます。 |
 
 ### `[work]`
 
@@ -161,6 +165,16 @@ auto_backup restore --input D:/backups/20260612_010000_documents.tar.zst --outpu
 
 復元前に、マニフェストに記録したチェックサムと照合し、ファイルが壊れている場合は復元しません。また、復元先に同じ名前のファイルやフォルダが1つでもある場合は、何も展開せずに中止します。空のフォルダを復元先に指定してください。
 
+## 更新
+
+```powershell
+auto_backup update
+```
+
+GitHub Releases の最新版をダウンロードし、署名を確かめてから `auto_backup.exe` 自身を置き換えます。すでに最新なら何もしません。`auto_backup.exe` を置いたフォルダに書き込める権限で実行してください。
+
+v0.1.0 にはこの機能がないので、v0.1.0 を使っている場合は一度だけ手動で入れ替えてください。
+
 ## 定期的に実行する
 
 Windows タスクスケジューラで、次のようにタスクを作成します。
@@ -178,7 +192,7 @@ mise exec rust -- cargo clippy --all-targets
 mise exec rust -- cargo test
 ```
 
-GitHub に push すると、GitHub Actions で同じチェック(fmt・clippy・test)が Windows 上で実行されます。`v1.0.0` のような `v` で始まるタグを push すると、チェックが通ったあとに `auto_backup.exe` を添付した GitHub Release が作られます。
+GitHub に push すると、GitHub Actions で同じチェック(fmt・clippy・test)が Windows 上で実行されます。`v1.0.0` のような `v` で始まるタグを push すると、チェックが通ったあとに `auto_backup.exe` を zip にまとめて署名し、GitHub Release に添付します。署名には GitHub Secrets の `ZIPSIGN_PRIVATE_KEY`(秘密鍵を base64 にしたもの)を使い、対になる公開鍵 [signing-public.key](signing-public.key) は exe に埋め込まれます。`Cargo.toml` の `version` を上げてから、同じ版のタグを push してください。
 
 ```powershell
 git tag v0.1.0

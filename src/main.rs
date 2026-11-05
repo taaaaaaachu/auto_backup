@@ -5,6 +5,7 @@ mod console;
 mod manifest;
 mod paths;
 mod progress;
+mod update;
 #[cfg(windows)]
 mod vss;
 
@@ -36,6 +37,8 @@ enum Command {
         #[arg(short, long)]
         output: PathBuf,
     },
+    /// GitHub Release の最新版に自分自身を置き換える
+    Update,
 }
 
 fn main() -> Result<()> {
@@ -49,5 +52,6 @@ fn main() -> Result<()> {
             input,
             output,
         } => app::restore(config.as_ref(), &input, &output),
+        Command::Update => update::run(),
     }
 }

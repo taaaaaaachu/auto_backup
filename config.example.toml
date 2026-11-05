@@ -24,6 +24,8 @@ patterns = [
 verify_after_copy = true
 delete_local_archive_after_copy = true
 skip_unreadable_files = false
+# Check GitHub Releases for a newer version on each backup and log a notice.
+check_for_updates = true
 
 [work]
 # Omit this to use the OS temp directory.

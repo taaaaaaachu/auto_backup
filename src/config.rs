@@ -60,6 +60,8 @@ pub struct BehaviorConfig {
     pub delete_local_archive_after_copy: bool,
     #[serde(default)]
     pub skip_unreadable_files: bool,
+    #[serde(default = "default_true")]
+    pub check_for_updates: bool,
 }
 
 impl Default for BehaviorConfig {
@@ -68,6 +70,7 @@ impl Default for BehaviorConfig {
             verify_after_copy: true,
             delete_local_archive_after_copy: true,
             skip_unreadable_files: false,
+            check_for_updates: true,
         }
     }
 }
@@ -195,6 +198,7 @@ path = "D:/backups"
     fn archive_section_can_be_omitted() {
         let config = parse(MINIMAL).expect("minimal config should parse");
         assert_eq!(config.archive.compression_level, 6);
+        assert!(config.behavior.check_for_updates);
         // 省略時は分割しない
         assert_eq!(config.max_part_size_bytes(), u64::MAX);
     }
@@ -247,5 +251,17 @@ path = "E:/restore.log"
         // バックアップ用の config.toml をそのまま渡しても読める
         let config: RestoreConfig = toml::from_str(MINIMAL).expect("backup config should parse");
         assert_eq!(config.log_path(), PathBuf::from("auto_backup.log"));
+    }
+
+    #[test]
+    fn update_check_can_be_disabled() {
+        let config = parse(&format!(
+            "{MINIMAL}
+[behavior]
+check_for_updates = false
+"
+        ))
+        .expect("config should parse");
+        assert!(!config.behavior.check_for_updates);
     }
 }
