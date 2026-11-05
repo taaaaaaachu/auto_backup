@@ -178,6 +178,13 @@ mise exec rust -- cargo clippy --all-targets
 mise exec rust -- cargo test
 ```
 
+GitHub に push すると、GitHub Actions で同じチェック(fmt・clippy・test)が Windows 上で実行されます。`v1.0.0` のような `v` で始まるタグを push すると、チェックが通ったあとに `auto_backup.exe` を添付した GitHub Release が作られます。
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
 VSSを使う部分は管理者権限が必要なため、自動テストの対象外です。変更したときは [docs/manual-testing-vss.md](docs/manual-testing-vss.md) の手順で手動確認してください。
 
 ## ライセンス
