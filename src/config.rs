@@ -77,9 +77,54 @@ pub struct WorkConfig {
     pub path: Option<PathBuf>,
 }
 
+impl WorkConfig {
+    fn dir(&self) -> PathBuf {
+        self.path
+            .clone()
+            .unwrap_or_else(|| std::env::temp_dir().join("auto_backup"))
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub struct LogConfig {
     pub path: Option<PathBuf>,
+}
+
+impl LogConfig {
+    fn file(&self) -> PathBuf {
+        self.path
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("auto_backup.log"))
+    }
+}
+
+/// 復元で使う設定。`[work]`・`[log]` だけを読み、他のセクションは無視する。
+#[derive(Debug, Default, Deserialize)]
+pub struct RestoreConfig {
+    #[serde(default)]
+    pub work: WorkConfig,
+    #[serde(default)]
+    pub log: LogConfig,
+}
+
+impl RestoreConfig {
+    /// `path` 省略時はすべて既定値で動く。
+    pub fn load(path: Option<&PathBuf>) -> Result<Self> {
+        let Some(path) = path else {
+            return Ok(Self::default());
+        };
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read config {}", path.display()))?;
+        toml::from_str(&text).with_context(|| format!("failed to parse config {}", path.display()))
+    }
+
+    pub fn work_dir(&self) -> PathBuf {
+        self.work.dir()
+    }
+
+    pub fn log_path(&self) -> PathBuf {
+        self.log.file()
+    }
 }
 
 impl Config {
@@ -112,17 +157,11 @@ impl Config {
     }
 
     pub fn work_dir(&self) -> PathBuf {
-        self.work
-            .path
-            .clone()
-            .unwrap_or_else(|| std::env::temp_dir().join("auto_backup"))
+        self.work.dir()
     }
 
     pub fn log_path(&self) -> PathBuf {
-        self.log
-            .path
-            .clone()
-            .unwrap_or_else(|| PathBuf::from("auto_backup.log"))
+        self.log.file()
     }
 }
 
@@ -181,5 +220,32 @@ max_part_size_mb = 0
 "
         ))
         .is_err());
+    }
+
+    #[test]
+    fn restore_config_defaults_without_file() {
+        let config = RestoreConfig::load(None).expect("defaults");
+        assert_eq!(config.work_dir(), std::env::temp_dir().join("auto_backup"));
+        assert_eq!(config.log_path(), PathBuf::from("auto_backup.log"));
+    }
+
+    #[test]
+    fn restore_config_reads_only_work_and_log() {
+        let config: RestoreConfig = toml::from_str(
+            r#"
+[work]
+path = "E:/work"
+
+[log]
+path = "E:/restore.log"
+"#,
+        )
+        .expect("source/destination should not be required");
+        assert_eq!(config.work_dir(), PathBuf::from("E:/work"));
+        assert_eq!(config.log_path(), PathBuf::from("E:/restore.log"));
+
+        // バックアップ用の config.toml をそのまま渡しても読める
+        let config: RestoreConfig = toml::from_str(MINIMAL).expect("backup config should parse");
+        assert_eq!(config.log_path(), PathBuf::from("auto_backup.log"));
     }
 }

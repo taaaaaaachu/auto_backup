@@ -28,8 +28,9 @@ enum Command {
         config: PathBuf,
     },
     Restore {
+        /// 省略時は作業フォルダ・ログを既定値で動かす
         #[arg(short, long)]
-        config: PathBuf,
+        config: Option<PathBuf>,
         #[arg(short, long)]
         input: PathBuf,
         #[arg(short, long)]
@@ -47,6 +48,6 @@ fn main() -> Result<()> {
             config,
             input,
             output,
-        } => app::restore(&config, &input, &output),
+        } => app::restore(config.as_ref(), &input, &output),
     }
 }

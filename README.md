@@ -143,18 +143,20 @@ copy bytes: 200.00 MB/500.00 MB (40%)
 ## 復元
 
 ```powershell
-auto_backup restore --config config.toml --input <バックアップファイル> --output <復元先フォルダ>
+auto_backup restore --input <バックアップファイル> --output <復元先フォルダ>
 ```
+
+`--config` は省略できます。省略すると、作業フォルダとログは既定値(`[work]`・`[log]` の既定値)になります。指定した場合も、設定ファイルから読むのは `[work]` と `[log]` だけです。バックアップに使った config.toml をそのまま渡すこともできますし、`[source]`・`[destination]` を書かない復元用の設定ファイルを使うこともできます。
 
 `--input` には次のどれを指定しても復元できます。分割されている場合は、同じフォルダにある残りの分割ファイルが自動で使われます。
 
 ```powershell
 # マニフェスト
-auto_backup restore --config config.toml --input D:/backups/20260612_010000_documents.manifest.toml --output C:/restore
+auto_backup restore --input D:/backups/20260612_010000_documents.manifest.toml --output C:/restore
 # 分割ファイルのどれか1つ
-auto_backup restore --config config.toml --input D:/backups/20260612_010000_documents.part001 --output C:/restore
+auto_backup restore --input D:/backups/20260612_010000_documents.part001 --output C:/restore
 # 分割されていないバックアップファイル
-auto_backup restore --config config.toml --input D:/backups/20260612_010000_documents.tar.zst --output C:/restore
+auto_backup restore --input D:/backups/20260612_010000_documents.tar.zst --output C:/restore
 ```
 
 復元前に、マニフェストに記録したチェックサムと照合し、ファイルが壊れている場合は復元しません。また、復元先に同じ名前のファイルやフォルダが1つでもある場合は、何も展開せずに中止します。空のフォルダを復元先に指定してください。

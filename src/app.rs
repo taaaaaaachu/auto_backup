@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use chrono::Local;
 
 use crate::archive;
-use crate::config::Config;
+use crate::config::{Config, RestoreConfig};
 use crate::manifest::Manifest;
 use crate::paths::unique_source_names;
 use crate::progress::{ConsoleProgress, ProgressReporter};
@@ -95,8 +95,8 @@ pub fn backup(config_path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-pub fn restore(config_path: &PathBuf, input: &Path, output: &Path) -> Result<()> {
-    let config = Config::load(config_path)?;
+pub fn restore(config_path: Option<&PathBuf>, input: &Path, output: &Path) -> Result<()> {
+    let config = RestoreConfig::load(config_path)?;
     let mut log = Logger::new(&config.log_path())?;
     let mut progress = ConsoleProgress::new();
     log.info("restore started")?;
