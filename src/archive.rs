@@ -10,20 +10,59 @@ use walkdir::WalkDir;
 use crate::manifest::{Manifest, Part, SkippedFile};
 use crate::progress::{NoProgress, ProgressReporter};
 
-pub fn build_exclude_set(patterns: &[String]) -> Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
-    for pattern in patterns {
-        builder
-            .add(Glob::new(pattern).with_context(|| format!("invalid exclude pattern {pattern}"))?);
+/// 1つのバックアップ元に対する除外設定。
+pub struct Excludes {
+    patterns: GlobSet,
+    /// バックアップ元からの相対パス(`paths::path_key` の形)。中身ごと除外する。
+    paths: Vec<Vec<String>>,
+}
+
+impl Excludes {
+    /// `paths` は絶対パス。`source` の中にないものは無視する(設定の検証で弾いている)。
+    pub fn new(patterns: &[String], paths: &[PathBuf], source: &Path) -> Result<Self> {
+        let mut builder = GlobSetBuilder::new();
+        for pattern in patterns {
+            builder.add(
+                Glob::new(pattern).with_context(|| format!("invalid exclude pattern {pattern}"))?,
+            );
+        }
+        Ok(Self {
+            patterns: builder.build().context("failed to build exclude matcher")?,
+            paths: paths
+                .iter()
+                .filter_map(|path| crate::paths::relative_to(source, path))
+                .map(|relative| crate::paths::path_key(&relative))
+                .collect(),
+        })
     }
-    builder.build().context("failed to build exclude matcher")
+
+    /// 中身ごと除外するパスか。走査時に中をたどらないために使う。
+    fn excludes_tree(&self, relative: &Path) -> bool {
+        !self.paths.is_empty() && self.paths.contains(&crate::paths::path_key(relative))
+    }
+}
+
+/// 走査ルート `source` 配下を、`exclude.paths` の中はたどらずに歩く。
+fn walk<'a>(
+    source: &'a Path,
+    excludes: &'a Excludes,
+) -> impl Iterator<Item = walkdir::Result<walkdir::DirEntry>> + 'a {
+    WalkDir::new(source)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(move |entry| {
+            entry
+                .path()
+                .strip_prefix(source)
+                .map_or(true, |relative| !excludes.excludes_tree(relative))
+        })
 }
 
 pub fn create_tar_zst_with_progress(
     source: &Path,
     output: &Path,
     compression_level: i32,
-    excludes: &GlobSet,
+    excludes: &Excludes,
     skip_unreadable_files: bool,
     progress: &mut impl ProgressReporter,
 ) -> Result<Vec<SkippedFile>> {
@@ -37,7 +76,7 @@ pub fn create_tar_zst_with_progress(
     let mut tar = tar::Builder::new(encoder);
     let mut skipped_files = Vec::new();
 
-    for entry in WalkDir::new(source).follow_links(false) {
+    for entry in walk(source, excludes) {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) if skip_unreadable_files => {
@@ -63,7 +102,7 @@ pub fn create_tar_zst_with_progress(
             .strip_prefix(source)
             .with_context(|| format!("failed to make path relative: {}", path.display()))?;
 
-        if excludes.is_match(relative) {
+        if excludes.patterns.is_match(relative) {
             continue;
         }
 
@@ -416,13 +455,13 @@ fn ensure_no_existing_entries(
 /// 走査した件数を進捗として出す。
 fn count_archive_bytes(
     source: &Path,
-    excludes: &GlobSet,
+    excludes: &Excludes,
     skip_unreadable_files: bool,
     progress: &mut impl ProgressReporter,
 ) -> Result<u64> {
     progress.start("scan entries", None);
     let mut total_bytes = 0u64;
-    for entry in WalkDir::new(source).follow_links(false) {
+    for entry in walk(source, excludes) {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) if skip_unreadable_files => {
@@ -440,7 +479,7 @@ fn count_archive_bytes(
         let relative = path
             .strip_prefix(source)
             .with_context(|| format!("failed to make path relative: {}", path.display()))?;
-        if excludes.is_match(relative) {
+        if excludes.patterns.is_match(relative) {
             continue;
         }
         if entry.file_type().is_file() {
@@ -522,7 +561,7 @@ mod tests {
         std::fs::create_dir(&source).expect("failed to create source");
         std::fs::write(source.join("hello.txt"), "hello").expect("failed to write source file");
         let output = dir.path.join("backup.tar.zst");
-        let excludes = build_exclude_set(&[]).expect("failed to build excludes");
+        let excludes = Excludes::new(&[], &[], &source).expect("failed to build excludes");
         let mut progress = RecordingProgress::default();
 
         create_tar_zst_with_progress(&source, &output, 1, &excludes, false, &mut progress)
@@ -552,7 +591,7 @@ mod tests {
         let big = vec![7u8; 3 * 1024 * 1024 + 123];
         std::fs::write(long_dir.join("big.bin"), &big).expect("failed to write file");
         let archive = dir.path.join("backup.tar.zst");
-        let excludes = build_exclude_set(&[]).expect("failed to build excludes");
+        let excludes = Excludes::new(&[], &[], &source).expect("failed to build excludes");
 
         create_tar_zst_with_progress(&source, &archive, 1, &excludes, false, &mut NoProgress)
             .expect("failed to create archive");
@@ -572,13 +611,48 @@ mod tests {
     }
 
     #[test]
+    fn exclude_paths_drop_whole_tree_relative_to_original_source() {
+        let dir = TestDir::new("archive_exclude_paths");
+        let source = dir.path.join("source");
+        std::fs::create_dir_all(source.join("Target").join("debug")).expect("mkdir");
+        std::fs::create_dir_all(source.join("sub").join("target")).expect("mkdir");
+        std::fs::write(source.join("keep.txt"), "keep").expect("write");
+        std::fs::write(source.join("cache.tmp"), "tmp").expect("write");
+        std::fs::write(source.join("Target").join("debug").join("x.bin"), "x").expect("write");
+        std::fs::write(source.join("sub").join("target").join("y.txt"), "y").expect("write");
+
+        // VSS 使用時のように、設定上のパス(元の場所)と実際に読む場所が違っても効く。
+        // 大文字小文字と区切り文字の違いも無視する。
+        let original = Path::new("C:/Users/name/Project");
+        let excludes = Excludes::new(
+            &["*.tmp".to_string()],
+            &[PathBuf::from(r"c:\users\NAME\project\target")],
+            original,
+        )
+        .expect("failed to build excludes");
+        let archive = dir.path.join("backup.tar.zst");
+        create_tar_zst_with_progress(&source, &archive, 1, &excludes, false, &mut NoProgress)
+            .expect("failed to create archive");
+        let restored = dir.path.join("restored");
+        restore_tar_zst_with_progress(&archive, &restored, &mut NoProgress)
+            .expect("failed to restore archive");
+
+        assert!(restored.join("keep.txt").exists());
+        assert!(!restored.join("cache.tmp").exists());
+        // 除外したフォルダは空フォルダとしても残らない
+        assert!(!restored.join("Target").exists());
+        // 同じ名前でも別の場所にあるフォルダは残る
+        assert!(restored.join("sub").join("target").join("y.txt").exists());
+    }
+
+    #[test]
     fn restore_reports_archive_byte_progress() {
         let dir = TestDir::new("restore_progress");
         let source = dir.path.join("source");
         std::fs::create_dir(&source).expect("failed to create source");
         std::fs::write(source.join("hello.txt"), "hello").expect("failed to write source file");
         let archive = dir.path.join("backup.tar.zst");
-        let excludes = build_exclude_set(&[]).expect("failed to build excludes");
+        let excludes = Excludes::new(&[], &[], &source).expect("failed to build excludes");
         create_tar_zst_with_progress(&source, &archive, 1, &excludes, false, &mut NoProgress)
             .expect("failed to create archive");
         let archive_size = archive.metadata().expect("archive missing").len();

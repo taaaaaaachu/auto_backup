@@ -19,6 +19,10 @@ patterns = [
   ".git/**",
   "*.tmp"
 ]
+# Absolute paths excluded with everything under them. Each must be inside one of source.paths.
+paths = [
+  "C:/dev/project/data/cache"
+]
 
 [behavior]
 verify_after_copy = true

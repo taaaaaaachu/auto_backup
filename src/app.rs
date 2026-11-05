@@ -38,7 +38,6 @@ pub fn backup(config_path: &PathBuf) -> Result<()> {
     std::fs::create_dir_all(&work_dir)
         .with_context(|| format!("failed to create work directory {}", work_dir.display()))?;
 
-    let excludes = archive::build_exclude_set(&config.exclude.patterns)?;
     let names = unique_source_names(&config.source.paths);
     let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
 
@@ -55,6 +54,8 @@ pub fn backup(config_path: &PathBuf) -> Result<()> {
             bail!("source path is not a directory: {}", source.display());
         }
 
+        let excludes =
+            archive::Excludes::new(&config.exclude.patterns, &config.exclude.paths, source)?;
         let source_read = vss_session.resolve(source);
         log.info(&format!(
             "{} for {}",

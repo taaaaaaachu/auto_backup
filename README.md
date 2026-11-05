@@ -73,11 +73,15 @@ cargo build --release
 | 項目 | 既定値 | 説明 |
 | --- | --- | --- |
 | `patterns` | なし | バックアップから除外するファイル・フォルダのパターン。バックアップ元フォルダからの相対パスで書きます。 |
+| `paths` | なし | 除外する特定のフォルダ・ファイルを絶対パスで書きます。フォルダは中身ごと除外されます。大文字小文字や `/`・`\` の違いは区別しません。`[source]` の `paths` のどれかの中にあるパスでなければエラーになります。存在しないパスは無視されます。 |
 
 ```toml
 [exclude]
-patterns = ["target/**", "node_modules/**", ".git/**", "*.tmp"]
+patterns = ["node_modules/**", ".git/**", "*.tmp"]
+paths = ["C:/dev/project/target"]
 ```
+
+`patterns` はどのバックアップ元でも同じ名前・形のものに効き、`paths` は書いたその1か所だけに効きます。たとえば `patterns = ["target/**"]` はすべての `target` フォルダを除外しますが、`paths = ["C:/dev/project/target"]` は `C:/dev/project` 直下の `target` だけを除外します。
 
 ### `[behavior]`
 

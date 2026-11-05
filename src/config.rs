@@ -50,6 +50,9 @@ impl Default for ArchiveConfig {
 pub struct ExcludeConfig {
     #[serde(default)]
     pub patterns: Vec<String>,
+    /// 中身ごと除外するフォルダ・ファイルの絶対パス。
+    #[serde(default)]
+    pub paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,6 +152,21 @@ impl Config {
             self.archive.max_part_size_mb != Some(0),
             "archive.max_part_size_mb must be greater than 0"
         );
+        for path in &self.exclude.paths {
+            anyhow::ensure!(
+                path.is_absolute(),
+                "exclude.paths must be absolute: {}",
+                path.display()
+            );
+            anyhow::ensure!(
+                self.source
+                    .paths
+                    .iter()
+                    .any(|source| crate::paths::relative_to(source, path).is_some()),
+                "exclude.paths is not inside any source.paths: {}",
+                path.display()
+            );
+        }
         Ok(())
     }
 
@@ -263,5 +281,22 @@ check_for_updates = false
         ))
         .expect("config should parse");
         assert!(!config.behavior.check_for_updates);
+    }
+
+    #[test]
+    fn exclude_paths_must_be_inside_a_source() {
+        let with = |path: &str| {
+            parse(&format!(
+                "{MINIMAL}
+[exclude]
+paths = ['{path}']
+"
+            ))
+        };
+        assert!(with("c:/DATA/target").is_ok());
+        assert!(with(r"C:\data\target").is_ok());
+        assert!(with("C:/other/target").is_err());
+        assert!(with("C:/data").is_err());
+        assert!(with("target").is_err());
     }
 }
