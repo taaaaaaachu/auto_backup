@@ -16,6 +16,10 @@ _Avoid_: backup file
 One `.partNNN` chunk of an Archive that exceeded `max_part_size_mb`, tracked with its own SHA-256 in the Manifest.
 _Avoid_: chunk, split file
 
+**Work Directory**:
+The staging folder (`[work] path`) where Archives, Parts, and Manifests are built before copying, and where Parts are recombined during restore. Shared between backup and restore. A Work Directory that a run had to create is removed afterward if it ends up empty; one that already existed is left alone.
+_Avoid_: temp folder, staging folder
+
 **Manifest**:
 The `.manifest.toml` companion file recording an Archive's Parts, checksums, and Skipped Files.
 _Avoid_: metadata file

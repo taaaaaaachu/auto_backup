@@ -34,9 +34,7 @@ pub fn backup(config_path: &PathBuf) -> Result<()> {
             config.destination.path.display()
         )
     })?;
-    let work_dir = config.work_dir();
-    std::fs::create_dir_all(&work_dir)
-        .with_context(|| format!("failed to create work directory {}", work_dir.display()))?;
+    let work_dir = WorkDir::create(&config.work_dir())?;
 
     let names = unique_source_names(&config.source.paths);
     let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
@@ -69,7 +67,7 @@ pub fn backup(config_path: &PathBuf) -> Result<()> {
 
         let base_name = format!("{timestamp}_{source_name}");
         log.info(&format!("creating archive for {}", source.display()))?;
-        let raw_archive = work_dir.join(format!("{base_name}.tmp.tar.zst"));
+        let raw_archive = work_dir.path.join(format!("{base_name}.tmp.tar.zst"));
         let skipped_files = archive::create_tar_zst_with_progress(
             &source_read.read_path,
             &raw_archive,
@@ -95,7 +93,7 @@ pub fn backup(config_path: &PathBuf) -> Result<()> {
                 skipped_file.reason
             ))?;
         }
-        let manifest_path = work_dir.join(format!("{base_name}.manifest.toml"));
+        let manifest_path = work_dir.path.join(format!("{base_name}.manifest.toml"));
         manifest.write_to(&manifest_path)?;
         local_files.push(manifest_path);
 
@@ -112,46 +110,100 @@ pub fn restore(config_path: Option<&PathBuf>, input: &Path, output: &Path) -> Re
     let mut progress = ConsoleProgress::new();
     log.info("restore started")?;
 
-    let work_dir = config.work_dir();
-    std::fs::create_dir_all(&work_dir)
-        .with_context(|| format!("failed to create work directory {}", work_dir.display()))?;
-
     let input = input
         .canonicalize()
         .with_context(|| format!("restore input not found: {}", input.display()))?;
 
-    let (archive_to_restore, remove_after_restore) = if input.extension().and_then(|v| v.to_str())
-        == Some("toml")
-    {
-        let manifest = Manifest::read_from(&input)?;
-        let manifest_dir = input.parent().context("manifest has no parent directory")?;
-        let combined = work_dir.join(format!("{}.restore.tar.zst", manifest.archive_name));
-        archive::combine_parts_with_progress(&manifest, manifest_dir, &combined, &mut progress)?;
-        (combined, true)
+    // 結合ファイルと作業フォルダは、成功・失敗どちらでも Drop で片付く
+    let combined;
+    let archive_to_restore: &Path = if input.extension().and_then(|v| v.to_str()) == Some("toml") {
+        combined = combine_in_work_dir(&config.work_dir(), &input, &mut progress)?;
+        &combined.path
     } else if input
         .file_name()
         .and_then(|v| v.to_str())
         .is_some_and(|name| name.ends_with(".tar.zst"))
     {
         verify_single_archive_if_manifest_exists(&input)?;
-        (input, false)
+        &input
     } else {
         let manifest_path = detect_manifest_for_part(&input)?;
-        let manifest = Manifest::read_from(&manifest_path)?;
-        let manifest_dir = manifest_path
-            .parent()
-            .context("manifest has no parent directory")?;
-        let combined = work_dir.join(format!("{}.restore.tar.zst", manifest.archive_name));
-        archive::combine_parts_with_progress(&manifest, manifest_dir, &combined, &mut progress)?;
-        (combined, true)
+        combined = combine_in_work_dir(&config.work_dir(), &manifest_path, &mut progress)?;
+        &combined.path
     };
 
-    archive::restore_tar_zst_with_progress(&archive_to_restore, output, &mut progress)?;
-    if remove_after_restore {
-        std::fs::remove_file(&archive_to_restore).ok();
-    }
+    archive::restore_tar_zst_with_progress(archive_to_restore, output, &mut progress)?;
     log.info(&format!("restore finished to {}", output.display()))?;
     Ok(())
+}
+
+/// 作業フォルダ。実行中に新しく作った場合だけ、Drop 時に作った最上位まで空のフォルダを消す。
+/// 中身が残っていれば(他の実行のファイル、失敗時の作業ファイルなど)消さずに残す。
+struct WorkDir {
+    path: PathBuf,
+    created_top: Option<PathBuf>,
+}
+
+impl WorkDir {
+    fn create(path: &Path) -> Result<Self> {
+        let created_top = path
+            .ancestors()
+            .take_while(|dir| !dir.as_os_str().is_empty() && !dir.exists())
+            .last()
+            .map(Path::to_path_buf);
+        std::fs::create_dir_all(path)
+            .with_context(|| format!("failed to create work directory {}", path.display()))?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            created_top,
+        })
+    }
+}
+
+impl Drop for WorkDir {
+    fn drop(&mut self) {
+        let Some(top) = &self.created_top else {
+            return;
+        };
+        for dir in self.path.ancestors() {
+            // remove_dir は空でなければ失敗するので、他人のファイルには触れない
+            if std::fs::remove_dir(dir).is_err() || dir == top {
+                break;
+            }
+        }
+    }
+}
+
+/// 作業フォルダ内に結合した Archive。Drop でファイルを消し、続けて作業フォルダを片付ける。
+struct CombinedArchive {
+    path: PathBuf,
+    _work_dir: WorkDir,
+}
+
+impl Drop for CombinedArchive {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.path).ok();
+    }
+}
+
+fn combine_in_work_dir(
+    work_dir: &Path,
+    manifest_path: &PathBuf,
+    progress: &mut impl ProgressReporter,
+) -> Result<CombinedArchive> {
+    let manifest = Manifest::read_from(manifest_path)?;
+    let manifest_dir = manifest_path
+        .parent()
+        .context("manifest has no parent directory")?;
+    let work_dir = WorkDir::create(work_dir)?;
+    let combined = CombinedArchive {
+        path: work_dir
+            .path
+            .join(format!("{}.restore.tar.zst", manifest.archive_name)),
+        _work_dir: work_dir,
+    };
+    archive::combine_parts_with_progress(&manifest, manifest_dir, &combined.path, progress)?;
+    Ok(combined)
 }
 
 fn copy_verify_and_cleanup(
@@ -355,5 +407,77 @@ impl Logger {
         writeln!(self.file, "[{timestamp}] {level} {message}")?;
         println!("{message}");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "auto_backup_app_{name}_{}_{}",
+            std::process::id(),
+            Local::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&root).expect("failed to create test root");
+        root
+    }
+
+    #[test]
+    fn work_dir_removes_created_ancestors_up_to_existing_one() {
+        let root = temp_root("nested");
+        let path = root.join("a").join("b").join("work");
+        drop(WorkDir::create(&path).expect("create"));
+        assert!(!root.join("a").exists());
+        assert!(root.exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn work_dir_keeps_preexisting_directory() {
+        let root = temp_root("existing");
+        drop(WorkDir::create(&root).expect("create"));
+        assert!(root.exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn work_dir_keeps_non_empty_directory() {
+        let root = temp_root("non_empty");
+        let path = root.join("a").join("work");
+        let work_dir = WorkDir::create(&path).expect("create");
+        std::fs::write(path.join("other.tmp"), b"x").expect("write");
+        drop(work_dir);
+        assert!(path.join("other.tmp").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn combined_archive_cleans_up_file_and_work_dir_on_failure() {
+        let root = temp_root("combine_fail");
+        let work = root.join("work");
+        // Part が存在しないので、結合ファイルを作った後で失敗する
+        let manifest_path = root.join("x.manifest.toml");
+        Manifest {
+            version: 1,
+            created_at: String::new(),
+            source_path: PathBuf::new(),
+            archive_name: "x".to_string(),
+            full_sha256: String::new(),
+            full_size: 1,
+            parts: vec![crate::manifest::Part {
+                file_name: "x.part001".to_string(),
+                sha256: String::new(),
+                size: 1,
+            }],
+            skipped_files: Vec::new(),
+        }
+        .write_to(&manifest_path)
+        .expect("write manifest");
+        let result = combine_in_work_dir(&work, &manifest_path, &mut crate::progress::NoProgress);
+        assert!(result.is_err());
+        assert!(!work.exists());
+        std::fs::remove_dir_all(&root).ok();
     }
 }
