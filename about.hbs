@@ -1,0 +1,9 @@
+This program includes the following third-party software.
+{{#each licenses}}
+
+================================================================================
+{{{name}}}
+Used by:{{#each used_by}} {{crate.name}} {{crate.version}}{{/each}}
+--------------------------------------------------------------------------------
+{{{text}}}
+{{/each}}

@@ -31,13 +31,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
       - run: cargo install zipsign --locked --version 0.2.2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - run: cargo about generate about.hbs -o THIRD-PARTY-NOTICES.txt
       # self_update は名前に target を含む zip を探し、zipsign の署名を検証する
       - name: Package and sign
         env:
           ZIPSIGN_PRIVATE_KEY: ${{ secrets.ZIPSIGN_PRIVATE_KEY }}
         run: |
           $zip = "auto_backup-x86_64-pc-windows-msvc.zip"
-          Compress-Archive -Path target/release/auto_backup.exe -DestinationPath $zip
+          Compress-Archive -Path target/release/auto_backup.exe, LICENSE, THIRD-PARTY-NOTICES.txt -DestinationPath $zip
           [IO.File]::WriteAllBytes("$env:RUNNER_TEMP/signing.key", [Convert]::FromBase64String($env:ZIPSIGN_PRIVATE_KEY))
           zipsign sign zip $zip "$env:RUNNER_TEMP/signing.key"
           zipsign verify zip $zip signing-public.key
